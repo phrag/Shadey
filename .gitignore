@@ -1,0 +1,33 @@
+# Gradle / build
+.gradle/
+build/
+/captures
+local.properties
+
+# IDE
+*.iml
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+
+# Android artifacts
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# Native
+.externalNativeBuild
+.cxx
+
+# Data pipeline
+/data-pipeline/.venv/
+**/__pycache__/
+*.osm.pbf
+*.osm.bz2
+
+# Large generated map data (produced by data-pipeline; sample data IS committed)
+/app/src/main/assets/data/berlin_buildings.geojson
+/app/src/main/assets/data/berlin_context.geojson

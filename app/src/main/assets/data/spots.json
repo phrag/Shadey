@@ -1,0 +1,20 @@
+[
+  { "id": "boxhagener-platz", "name": "Boxhagener Platz", "lat": 52.51028, "lng": 13.45853, "category": "SQUARE", "description": "Leafy Friedrichshain square ringed by cafe terraces; weekend markets.", "source": "CURATED" },
+  { "id": "helmholtzplatz", "name": "Helmholtzplatz", "lat": 52.53980, "lng": 13.41800, "category": "SQUARE", "description": "Prenzlauer Berg square with playground and sunny benches.", "source": "CURATED" },
+  { "id": "mauerpark", "name": "Mauerpark", "lat": 52.54100, "lng": 13.40200, "category": "PARK", "description": "Sunday flea market, karaoke, and open lawns on the former Wall strip.", "source": "CURATED" },
+  { "id": "goerlitzer-park", "name": "Goerlitzer Park", "lat": 52.49860, "lng": 13.43600, "category": "PARK", "description": "Big open Kreuzberg park, popular for picnics.", "source": "CURATED" },
+  { "id": "admiralbruecke", "name": "Admiralbruecke", "lat": 52.49360, "lng": 13.41800, "category": "WATERSIDE", "description": "Canal bridge where people sit out on warm evenings.", "source": "CURATED" },
+  { "id": "paul-lincke-ufer", "name": "Paul-Lincke-Ufer", "lat": 52.49450, "lng": 13.42700, "category": "WATERSIDE", "description": "Tree-lined canal bank with cafes along the Landwehrkanal.", "source": "CURATED" },
+  { "id": "james-simon-park", "name": "James-Simon-Park", "lat": 52.52150, "lng": 13.39600, "category": "WATERSIDE", "description": "Riverside lawn by the Spree on Museum Island's edge.", "source": "CURATED" },
+  { "id": "tempelhofer-feld", "name": "Tempelhofer Feld", "lat": 52.47300, "lng": 13.40300, "category": "PARK", "description": "Vast former airfield; endless sun, kite-flying and BBQ zones.", "source": "CURATED" },
+  { "id": "volkspark-friedrichshain", "name": "Volkspark Friedrichshain", "lat": 52.52850, "lng": 13.43500, "category": "PARK", "description": "Hilly park with lawns, fountains and a beer garden.", "source": "CURATED" },
+  { "id": "viktoriapark", "name": "Viktoriapark", "lat": 52.48800, "lng": 13.37900, "category": "VIEWPOINT", "description": "Kreuzberg hill with a waterfall and a sunny city view.", "source": "CURATED" },
+  { "id": "cafe-am-neuen-see", "name": "Cafe am Neuen See", "lat": 52.50950, "lng": 13.34700, "category": "CAFE", "description": "Lakeside beer garden in the Tiergarten.", "source": "CURATED" },
+  { "id": "klunkerkranich", "name": "Klunkerkranich", "lat": 52.48100, "lng": 13.43000, "category": "BAR", "description": "Rooftop bar above a Neukoelln car park; sunset views.", "source": "CURATED" },
+  { "id": "schlachtensee", "name": "Schlachtensee", "lat": 52.43800, "lng": 13.20100, "category": "WATERSIDE", "description": "Forest lake with sunny southern banks for swimming.", "source": "CURATED" },
+  { "id": "engelbecken", "name": "Engelbecken", "lat": 52.50300, "lng": 13.41800, "category": "WATERSIDE", "description": "Quiet pond and rose garden with a waterfront cafe.", "source": "CURATED" },
+  { "id": "weinbergspark", "name": "Weinbergspark", "lat": 52.53050, "lng": 13.40150, "category": "PARK", "description": "Sloped lawn in Mitte that catches the afternoon sun.", "source": "CURATED" },
+  { "id": "arkonaplatz", "name": "Arkonaplatz", "lat": 52.53900, "lng": 13.40150, "category": "SQUARE", "description": "Relaxed square with a flea market and cafe terraces.", "source": "CURATED" },
+  { "id": "koernerpark", "name": "Koernerpark", "lat": 52.47500, "lng": 13.43800, "category": "PARK", "description": "Sunken neo-baroque garden with an orangery cafe in Neukoelln.", "source": "CURATED" },
+  { "id": "oberbaumbruecke", "name": "Oberbaumbruecke", "lat": 52.50180, "lng": 13.44560, "category": "VIEWPOINT", "description": "Landmark brick bridge over the Spree between Kreuzberg and Friedrichshain.", "source": "CURATED" }
+]

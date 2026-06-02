@@ -81,6 +81,15 @@ class ShadowEngine(
         return Polygons.convexHull(pts).map(proj::toLatLng)
     }
 
+    /**
+     * Shadow polygon using a projection anchored at the building's own footprint, making the
+     * result independent of the map centre. This lets callers cache the output per building.
+     */
+    fun castShadow(building: Building, sun: SolarPosition): List<LatLng>? {
+        val anchor = building.footprint.firstOrNull() ?: return null
+        return castShadow(building, sun, LocalProjection(anchor))
+    }
+
     data class Transition(val at: Instant, val to: Sunlight)
 
     /**

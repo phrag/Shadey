@@ -4,7 +4,6 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.shadey.core.data.SpotsJson
-import app.shadey.core.geo.LocalProjection
 import app.shadey.core.model.Building
 import app.shadey.core.model.LatLng
 import app.shadey.core.model.Spot
@@ -72,6 +71,10 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     private var bounds: ClosedBounds? = null
     private var recomputeJob: Job? = null
     private var buildingsJob: Job? = null
+
+    // Per-building shadow cache, valid while the sun bucket is unchanged. Keyed by building id.
+    private val shadowCache = java.util.concurrent.ConcurrentHashMap<String, List<LatLng>>()
+    @Volatile private var shadowCacheSunKey: String? = null
 
     init {
         viewModelScope.launch {
@@ -207,11 +210,20 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
             val (ranked, shadowRings) = withContext(Dispatchers.Default) {
                 val r = ranker.rank(spots, now) { buildingsNear(it.latLng, frozenBuildings) }
                 val sun = SolarCalculator.position(frozenCenter, now)
-                val proj = LocalProjection(frozenCenter)
+                // Sun bucket — shadows are visually identical within ~0.5°, so we cache per
+                // (building, sun bucket). Panning at a fixed time is then near-instant.
+                val sunKey = "${(sun.azimuthDeg * 2).toInt()}_${(sun.elevationDeg * 2).toInt()}"
+                if (sunKey != shadowCacheSunKey || shadowCache.size > 8000) {
+                    shadowCache.clear()
+                    shadowCacheSunKey = sunKey
+                }
                 val rings = buildingsInView(frozenCenter, frozenBuildings)
                     .sortedBy { distanceSq(frozenCenter, it.centroid()) }
                     .take(MAX_SHADOWS)
-                    .mapNotNull { engine.castShadow(it, sun, proj) }
+                    .mapNotNull { b ->
+                        shadowCache.getOrPut(b.id) { engine.castShadow(b, sun) ?: EMPTY_RING }
+                            .takeIf { it.isNotEmpty() }
+                    }
                 r to rings
             }
             _state.update {
@@ -240,5 +252,6 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
 
     private companion object {
         const val MAX_SHADOWS = 300
+        val EMPTY_RING = emptyList<LatLng>()
     }
 }

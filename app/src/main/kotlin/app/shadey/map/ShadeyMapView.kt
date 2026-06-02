@@ -136,13 +136,18 @@ private object MapStyles {
         style.addSource(GeoJsonSource("spots", GeoJsonWriter.emptyCollection()))
         style.addSource(GeoJsonSource("pin", GeoJsonWriter.emptyCollection()))
 
-        // Ground shadows beneath spots.
-        style.addLayer(
-            FillLayer("shadows-layer", "shadows").withProperties(
-                PropertyFactory.fillColor("#2A3550"),
-                PropertyFactory.fillOpacity(0.30f),
-            ),
+        // Ground shadows — inserted below road labels so they show on top of ground/parks
+        // but don't cover street text. "road_label" is a stable layer in the Liberty style.
+        val shadowLayer = FillLayer("shadows-layer", "shadows").withProperties(
+            PropertyFactory.fillColor("#1A2A44"),
+            PropertyFactory.fillOpacity(0.55f),
         )
+        val firstSymbolLayer = style.layers.firstOrNull { it is org.maplibre.android.style.layers.SymbolLayer }
+        if (firstSymbolLayer != null) {
+            style.addLayerBelow(shadowLayer, firstSymbolLayer.id)
+        } else {
+            style.addLayer(shadowLayer)
+        }
         // Spots, coloured by sun/shade.
         style.addLayer(
             CircleLayer("spots-layer", "spots").withProperties(

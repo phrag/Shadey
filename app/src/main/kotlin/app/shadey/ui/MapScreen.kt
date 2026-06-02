@@ -215,7 +215,10 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
                             info,
                             zone,
                             selected = info.spot.id == state.selectedId,
-                            onClick = { vm.selectSpot(info.spot.id) },
+                            onClick = {
+                                vm.selectSpot(info.spot.id)
+                                vm.moveTo(app.shadey.core.model.LatLng(info.spot.lat, info.spot.lng))
+                            },
                         )
                     }
                 }

@@ -10,6 +10,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -90,7 +91,7 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
 
         // Title + data-source status.
         Surface(
-            modifier = Modifier.align(Alignment.TopStart).padding(12.dp),
+            modifier = Modifier.align(Alignment.TopStart).statusBarsPadding().padding(12.dp),
             shape = RoundedCornerShape(24.dp),
             color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
             tonalElevation = 3.dp,
@@ -124,7 +125,7 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
 
         // Top-right button column: settings + locate-me
         Column(
-            modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
+            modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Surface(

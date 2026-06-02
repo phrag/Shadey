@@ -18,7 +18,7 @@ import app.shadey.core.model.LatLng as CoreLatLng
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng as MlLatLng
-import org.maplibre.geojson.FeatureCollection
+import org.maplibre.geojson.Feature
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
@@ -48,7 +48,7 @@ fun ShadeyMap(
     cameraTarget: CoreLatLng?,
     onMapClick: (CoreLatLng) -> Unit,
     onCameraIdle: (center: CoreLatLng, bounds: ClosedBounds) -> Unit,
-    onBuildingsQueried: (geoJson: String) -> Unit,
+    onBuildingsQueried: (features: List<Feature>) -> Unit,
     onCameraTargetConsumed: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -113,9 +113,7 @@ fun ShadeyMap(
                             if (buildingLayerIds.isNotEmpty()) {
                                 val rect = RectF(0f, 0f, mapView.width.toFloat(), mapView.height.toFloat())
                                 val features = map.queryRenderedFeatures(rect, *buildingLayerIds)
-                                if (features.isNotEmpty()) {
-                                    onBuildingsQueried(FeatureCollection.fromFeatures(features).toJson())
-                                }
+                                if (features.isNotEmpty()) onBuildingsQueried(features)
                             }
                         }
                         handle = MapHandle(map, style)

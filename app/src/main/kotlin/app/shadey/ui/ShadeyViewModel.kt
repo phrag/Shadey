@@ -3,7 +3,6 @@ package app.shadey.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import app.shadey.core.data.GeoJsonBuildings
 import app.shadey.core.data.SpotsJson
 import app.shadey.core.geo.LocalProjection
 import app.shadey.core.model.Building
@@ -162,15 +161,16 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
      * Building footprints harvested directly from the rendered map tiles (no network).
      * Parsed off the main thread and fed straight into the shadow engine.
      */
-    fun onBuildingsQueried(geoJson: String) {
+    fun onBuildingsQueried(features: List<org.maplibre.geojson.Feature>) {
         buildingsJob?.cancel()
         buildingsJob = viewModelScope.launch {
-            val buildings = withContext(Dispatchers.Default) { GeoJsonBuildings.parse(geoJson) }
+            val buildings = withContext(Dispatchers.Default) {
+                app.shadey.map.featuresToBuildings(features)
+            }
+            if (buildings == activeBuildings) return@launch // nothing changed
             activeBuildings = buildings
             _state.update {
-                it.copy(
-                    sourceLabel = if (buildings.isEmpty()) "No buildings here" else "OpenStreetMap · ${buildings.size} buildings",
-                )
+                it.copy(sourceLabel = if (buildings.isEmpty()) "No buildings here" else "OpenStreetMap · ${buildings.size} buildings")
             }
             scheduleRecompute()
         }
@@ -206,10 +206,10 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                 val r = ranker.rank(spots, now) { buildingsNear(it.latLng) }
                 val sun = SolarCalculator.position(center, now)
                 val proj = LocalProjection(center)
-                val rings = buildingsInView().asSequence()
+                val rings = buildingsInView()
+                    .sortedBy { distanceSq(center, it.centroid()) }
                     .take(MAX_SHADOWS)
                     .mapNotNull { engine.castShadow(it, sun, proj) }
-                    .toList()
                 r to rings
             }
             _state.update {
@@ -229,7 +229,14 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         }.getOrNull()?.let { SpotsJson.parse(it) } ?: emptyList()
     }
 
+    // Closest N buildings only — distant ones cast negligible shadows and dominate CPU time.
+    private fun distanceSq(a: LatLng, b: LatLng): Double {
+        val dLat = a.lat - b.lat
+        val dLng = a.lng - b.lng
+        return dLat * dLat + dLng * dLng
+    }
+
     private companion object {
-        const val MAX_SHADOWS = 4000
+        const val MAX_SHADOWS = 300
     }
 }

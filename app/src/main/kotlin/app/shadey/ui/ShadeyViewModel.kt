@@ -48,8 +48,9 @@ data class ShadeyUiState(
     val spotsGeoJson: String = GeoJsonWriter.emptyCollection(),
     val pinGeoJson: String = GeoJsonWriter.emptyCollection(),
     val sourceLabel: String = "Loading…",
-    val allowRoaming: Boolean = false,
+    val allowRoaming: Boolean = true,
     val busy: Boolean = false,
+    val cameraTarget: LatLng? = null,
 ) {
     val selected: SpotSunInfo? get() = ranked.firstOrNull { it.spot.id == selectedId }
 }
@@ -130,6 +131,14 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
     }
+
+    fun moveTo(p: LatLng) {
+        center = p
+        _state.update { it.copy(cameraTarget = p) }
+        scheduleRecompute()
+    }
+
+    fun onCameraTargetConsumed() = _state.update { it.copy(cameraTarget = null) }
 
     fun clearDropped() =
         _state.update { it.copy(dropped = null, pinGeoJson = GeoJsonWriter.emptyCollection()) }

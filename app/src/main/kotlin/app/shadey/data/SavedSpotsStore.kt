@@ -24,7 +24,7 @@ class SavedSpotsStore(private val context: Context) {
         prefs[userSpotsKey]?.let { SpotsJson.parse(it) } ?: emptyList()
     }
 
-    val allowRoaming: Flow<Boolean> = context.dataStore.data.map { it[roamingKey] ?: false }
+    val allowRoaming: Flow<Boolean> = context.dataStore.data.map { it[roamingKey] ?: true }
 
     suspend fun addOrUpdate(spot: Spot) {
         context.dataStore.edit { prefs ->

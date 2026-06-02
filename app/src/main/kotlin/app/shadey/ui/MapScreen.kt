@@ -1,7 +1,14 @@
 package app.shadey.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.location.LocationManager
+import android.content.Context
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,11 +28,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -62,6 +71,19 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
     val state by vm.state.collectAsStateWithLifecycle()
     val zone = remember { vm.zone() }
     var showSettings by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+
+    fun getAndMoveToLocation() {
+        val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        @Suppress("MissingPermission")
+        val loc = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+            ?: lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+        if (loc != null) vm.moveTo(app.shadey.core.model.LatLng(loc.latitude, loc.longitude))
+    }
+
+    val locationPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted -> if (granted) getAndMoveToLocation() }
 
     Box(Modifier.fillMaxSize()) {
         ShadeyMapLayer(state, vm)
@@ -100,9 +122,10 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
             }
         }
 
-        IconButton(
-            onClick = { showSettings = true },
+        // Top-right button column: settings + locate-me
+        Column(
             modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Surface(
                 shape = CircleShape,
@@ -110,7 +133,24 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
                 tonalElevation = 3.dp,
                 shadowElevation = 3.dp,
             ) {
-                Icon(Icons.Filled.Settings, "Settings", modifier = Modifier.padding(8.dp))
+                IconButton(onClick = { showSettings = true }) {
+                    Icon(Icons.Filled.Settings, "Settings")
+                }
+            }
+            FloatingActionButton(
+                onClick = {
+                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)
+                        == PackageManager.PERMISSION_GRANTED
+                    ) {
+                        getAndMoveToLocation()
+                    } else {
+                        locationPermLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+                    }
+                },
+                containerColor = MaterialTheme.colorScheme.surface,
+                contentColor = MaterialTheme.colorScheme.primary,
+            ) {
+                Icon(Icons.Filled.MyLocation, "My location")
             }
         }
 
@@ -205,8 +245,10 @@ private fun ShadeyMapLayer(state: ShadeyUiState, vm: ShadeyViewModel) {
         shadowsGeoJson = state.shadowsGeoJson,
         spotsGeoJson = state.spotsGeoJson,
         pinGeoJson = state.pinGeoJson,
+        cameraTarget = state.cameraTarget,
         onMapClick = vm::onMapClick,
         onCameraIdle = vm::onCameraIdle,
+        onCameraTargetConsumed = vm::onCameraTargetConsumed,
         modifier = Modifier.fillMaxSize(),
     )
 }

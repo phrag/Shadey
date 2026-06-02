@@ -22,7 +22,6 @@ import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
 import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.CircleLayer
-import org.maplibre.android.style.layers.FillExtrusionLayer
 import org.maplibre.android.style.layers.FillLayer
 import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.sources.GeoJsonSource
@@ -44,8 +43,10 @@ fun ShadeyMap(
     shadowsGeoJson: String,
     spotsGeoJson: String,
     pinGeoJson: String,
+    cameraTarget: CoreLatLng?,
     onMapClick: (CoreLatLng) -> Unit,
     onCameraIdle: (center: CoreLatLng, bounds: ClosedBounds) -> Unit,
+    onCameraTargetConsumed: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -85,7 +86,7 @@ fun ShadeyMap(
                                 .build(),
                         ),
                     )
-                    map.setStyle(Style.Builder().fromJson(MapStyles.baseStyleJson)) { style ->
+                    map.setStyle(Style.Builder().fromUri("https://tiles.openfreemap.org/styles/liberty")) { style ->
                         MapStyles.installLayers(style, buildingsGeoJson)
                         map.addOnMapClickListener { p ->
                             onMapClick(CoreLatLng(p.latitude, p.longitude))
@@ -120,41 +121,26 @@ fun ShadeyMap(
     LaunchedEffect(handle, pinGeoJson) {
         handle?.style?.getSourceAs<GeoJsonSource>("pin")?.setGeoJson(pinGeoJson)
     }
+    LaunchedEffect(handle, cameraTarget) {
+        val h = handle ?: return@LaunchedEffect
+        val target = cameraTarget ?: return@LaunchedEffect
+        h.map.animateCamera(CameraUpdateFactory.newLatLng(MlLatLng(target.lat, target.lng)))
+        onCameraTargetConsumed()
+    }
 }
 
 private object MapStyles {
-    // A clean offline base. Streets/water can be layered in later from the data pipeline;
-    // for now the bundled 3D buildings + shadows provide the spatial context.
-    val baseStyleJson = """
-        {
-          "version": 8,
-          "name": "Shadey",
-          "sources": {},
-          "layers": [
-            { "id": "bg", "type": "background", "paint": { "background-color": "#E9EEF2" } }
-          ]
-        }
-    """.trimIndent()
-
     fun installLayers(style: Style, buildingsGeoJson: String) {
         style.addSource(GeoJsonSource("shadows", GeoJsonWriter.emptyCollection()))
         style.addSource(GeoJsonSource("buildings", buildingsGeoJson))
         style.addSource(GeoJsonSource("spots", GeoJsonWriter.emptyCollection()))
         style.addSource(GeoJsonSource("pin", GeoJsonWriter.emptyCollection()))
 
-        // Ground shadows (drawn first, beneath the extrusions).
+        // Ground shadows beneath spots.
         style.addLayer(
             FillLayer("shadows-layer", "shadows").withProperties(
                 PropertyFactory.fillColor("#2A3550"),
                 PropertyFactory.fillOpacity(0.30f),
-            ),
-        )
-        // 3D buildings.
-        style.addLayer(
-            FillExtrusionLayer("buildings-3d", "buildings").withProperties(
-                PropertyFactory.fillExtrusionColor("#C9D2DB"),
-                PropertyFactory.fillExtrusionHeight(Expression.get("height")),
-                PropertyFactory.fillExtrusionOpacity(0.92f),
             ),
         )
         // Spots, coloured by sun/shade.

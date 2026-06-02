@@ -32,27 +32,36 @@ class OverpassClient(
 
     private val json = Json { ignoreUnknownKeys = true }
 
+    /** Returns buildings, or throws an exception describing what went wrong. */
     suspend fun fetchBuildings(box: BoundingBox): List<Building> = withContext(Dispatchers.IO) {
-        val query = """
-            [out:json][timeout:60];
-            (way["building"](${box.south},${box.west},${box.north},${box.east}););
-            out body geom;
-        """.trimIndent()
+        val query = "[out:json][timeout:60];\n" +
+            "(way[\"building\"](${box.south},${box.west},${box.north},${box.east}););\n" +
+            "out body geom;"
 
+        var lastError: String = "Unknown error"
         for (url in endpoints) {
-            val parsed = runCatching {
+            try {
                 val request = Request.Builder()
                     .url(url)
-                    .header("User-Agent", "Shadey/1.0 (offline sun/shade app)")
+                    .header("User-Agent", "Shadey/1.0 (sun/shade app)")
                     .post(FormBody.Builder().add("data", query).build())
                     .build()
-                client.newCall(request).execute().use { resp ->
-                    if (!resp.isSuccessful) null else resp.body?.string()?.let(::parse)
-                }
-            }.getOrNull()
-            if (!parsed.isNullOrEmpty()) return@withContext parsed
+                val body = client.newCall(request).execute().use { resp ->
+                    if (!resp.isSuccessful) {
+                        lastError = "HTTP ${resp.code} from $url"
+                        null
+                    } else {
+                        resp.body?.string()
+                    }
+                } ?: continue
+                val parsed = parse(body)
+                // An empty list here means "no buildings in this area", not an error.
+                return@withContext parsed
+            } catch (e: Exception) {
+                lastError = "${e.javaClass.simpleName}: ${e.message}"
+            }
         }
-        emptyList()
+        throw RuntimeException("Overpass unavailable: $lastError")
     }
 
     private fun parse(body: String): List<Building> {

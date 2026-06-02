@@ -164,19 +164,20 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun maybeRoam(c: LatLng) {
         _state.update { it.copy(busy = true, sourceLabel = "Fetching OpenStreetMap…") }
-        val fetched = buildingsRepo.fetchOsmAround(c)
-        if (fetched.isNotEmpty()) {
-            activeBuildings = fetched
+        val fetched = runCatching { buildingsRepo.fetchOsmAround(c) }
+        fetched.onSuccess { buildings ->
+            activeBuildings = buildings
             _state.update {
                 it.copy(
                     busy = false,
-                    buildingsGeoJson = GeoJsonWriter.buildings(fetched),
-                    sourceLabel = "OpenStreetMap · live",
+                    buildingsGeoJson = GeoJsonWriter.buildings(buildings),
+                    sourceLabel = if (buildings.isEmpty()) "No buildings in this area" else "OpenStreetMap · ${buildings.size} buildings",
                 )
             }
-            scheduleRecompute()
-        } else {
-            _state.update { it.copy(busy = false, sourceLabel = "No buildings found") }
+            if (buildings.isNotEmpty()) scheduleRecompute()
+        }
+        fetched.onFailure { e ->
+            _state.update { it.copy(busy = false, sourceLabel = "OSM error: ${e.message}") }
         }
     }
 

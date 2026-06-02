@@ -46,8 +46,13 @@ class BuildingRepository(private val context: Context) {
     fun allBundled(): List<Building> = bundled
 
     /** Cached OSM fetch for a small area around [p]. Throws if the network request fails. */
-    suspend fun fetchOsmAround(p: LatLng, radiusMeters: Double = 400.0): List<Building> {
-        val box = BoundingBox.around(p, radiusMeters)
+    suspend fun fetchOsmAround(p: LatLng, radiusMeters: Double = 700.0): List<Building> {
+        // Snap to ~500 m grid so nearby camera positions share a cache entry.
+        val snapped = LatLng(
+            (p.lat * 200).toLong() / 200.0,
+            (p.lng * 200).toLong() / 200.0,
+        )
+        val box = BoundingBox.around(snapped, radiusMeters)
         val key = "%.3f_%.3f_%.3f_%.3f".format(box.south, box.west, box.north, box.east)
         osmCache[key]?.let { return it }
         val fetched = overpass.fetchBuildings(box) // throws on network/HTTP error

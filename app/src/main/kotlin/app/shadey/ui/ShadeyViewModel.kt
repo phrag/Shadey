@@ -166,7 +166,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     private fun scheduleRoam(c: LatLng) {
         val prev = lastFetchCenter
         // Only fetch if we've never fetched, or moved more than 300 m from the last fetch.
-        if (prev != null && distanceMeters(prev, c) < 300.0) return
+        if (prev != null && distanceMeters(prev, c) < 500.0) return
         roamJob?.cancel()
         roamJob = viewModelScope.launch { doRoam(c) }
     }

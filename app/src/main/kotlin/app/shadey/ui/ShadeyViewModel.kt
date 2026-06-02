@@ -167,7 +167,6 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
             val buildings = withContext(Dispatchers.Default) {
                 app.shadey.map.featuresToBuildings(features)
             }
-            if (buildings == activeBuildings) return@launch // nothing changed
             activeBuildings = buildings
             _state.update {
                 it.copy(sourceLabel = if (buildings.isEmpty()) "No buildings here" else "OpenStreetMap · ${buildings.size} buildings")
@@ -184,15 +183,15 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         return SpotSunInfo(tmp, engine.sunlightAt(p, sun, near), sun, engine.nextTransition(p, near, now)?.at)
     }
 
-    private fun buildingsNear(p: LatLng, radiusMeters: Double = 800.0): List<Building> {
+    private fun buildingsNear(p: LatLng, buildings: List<Building> = activeBuildings, radiusMeters: Double = 800.0): List<Building> {
         val box = BoundingBox.around(p, radiusMeters)
-        return activeBuildings.filter { box.contains(it.centroid()) }
+        return buildings.filter { box.contains(it.centroid()) }
     }
 
-    private fun buildingsInView(): List<Building> {
-        val b = bounds ?: return buildingsNear(center)
+    private fun buildingsInView(c: LatLng = center, buildings: List<Building> = activeBuildings): List<Building> {
+        val b = bounds ?: return buildingsNear(c, buildings)
         val box = BoundingBox(b.south, b.west, b.north, b.east).expandedMeters(150.0)
-        return activeBuildings.filter { box.contains(it.centroid()) }
+        return buildings.filter { box.contains(it.centroid()) }
     }
 
     private fun scheduleRecompute(immediate: Boolean = false) {
@@ -202,12 +201,15 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
             val snapshot = _state.value
             val now = instant(snapshot)
             val spots = (curated + userSpots).distinctBy { it.id }
+            // Snapshot mutable fields before background thread — sort comparator must be stable.
+            val frozenCenter = center
+            val frozenBuildings = activeBuildings
             val (ranked, shadowRings) = withContext(Dispatchers.Default) {
-                val r = ranker.rank(spots, now) { buildingsNear(it.latLng) }
-                val sun = SolarCalculator.position(center, now)
-                val proj = LocalProjection(center)
-                val rings = buildingsInView()
-                    .sortedBy { distanceSq(center, it.centroid()) }
+                val r = ranker.rank(spots, now) { buildingsNear(it.latLng, frozenBuildings) }
+                val sun = SolarCalculator.position(frozenCenter, now)
+                val proj = LocalProjection(frozenCenter)
+                val rings = buildingsInView(frozenCenter, frozenBuildings)
+                    .sortedBy { distanceSq(frozenCenter, it.centroid()) }
                     .take(MAX_SHADOWS)
                     .mapNotNull { engine.castShadow(it, sun, proj) }
                 r to rings

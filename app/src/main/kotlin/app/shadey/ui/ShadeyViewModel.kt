@@ -172,7 +172,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun doRoam(c: LatLng) {
-        _state.update { it.copy(busy = true, sourceLabel = "Fetching OpenStreetMap…") }
+        _state.update { it.copy(busy = true) }
         val fetched = runCatching { buildingsRepo.fetchOsmAround(c) }
         fetched.onSuccess { buildings ->
             lastFetchCenter = c
@@ -187,7 +187,13 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
             if (buildings.isNotEmpty()) scheduleRecompute()
         }
         fetched.onFailure { e ->
-            _state.update { it.copy(busy = false, sourceLabel = "OSM error: ${e.message}") }
+            // CancellationException means a newer fetch superseded this one — keep existing data.
+            if (e is kotlinx.coroutines.CancellationException) {
+                _state.update { it.copy(busy = false) }
+                return
+            }
+            // Network error: keep whatever buildings we already have, just note the issue.
+            _state.update { it.copy(busy = false, sourceLabel = if (activeBuildings.isEmpty()) "OSM unavailable — move map to retry" else "OpenStreetMap · ${activeBuildings.size} buildings (cached)") }
         }
     }
 

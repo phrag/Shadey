@@ -43,7 +43,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -232,11 +231,7 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
         }
 
         if (showSettings) {
-            SettingsDialog(
-                allowRoaming = state.allowRoaming,
-                onToggle = vm::setAllowRoaming,
-                onDismiss = { showSettings = false },
-            )
+            SettingsDialog(onDismiss = { showSettings = false })
         }
     }
 }
@@ -353,29 +348,16 @@ private fun SelectedCard(
 }
 
 @Composable
-private fun SettingsDialog(allowRoaming: Boolean, onToggle: (Boolean) -> Unit, onDismiss: () -> Unit) {
+private fun SettingsDialog(onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
         confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
         title = { Text("Settings") },
         text = {
             Column {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Fetch maps outside Berlin", style = MaterialTheme.typography.bodyMedium)
-                        Text(
-                            "Downloads building data from OpenStreetMap over the network, only when you leave the bundled area.",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                        )
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    Switch(checked = allowRoaming, onCheckedChange = onToggle)
-                }
-                Spacer(Modifier.height(12.dp))
                 Text(
-                    "Berlin works fully offline — no network access is used.",
-                    style = MaterialTheme.typography.labelSmall,
+                    "Building data is fetched live from OpenStreetMap as you move the map.",
+                    style = MaterialTheme.typography.bodyMedium,
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(

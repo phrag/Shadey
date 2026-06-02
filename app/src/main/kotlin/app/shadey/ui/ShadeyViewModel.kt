@@ -48,7 +48,6 @@ data class ShadeyUiState(
     val spotsGeoJson: String = GeoJsonWriter.emptyCollection(),
     val pinGeoJson: String = GeoJsonWriter.emptyCollection(),
     val sourceLabel: String = "Loading…",
-    val allowRoaming: Boolean = true,
     val busy: Boolean = false,
     val cameraTarget: LatLng? = null,
 ) {
@@ -78,24 +77,16 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         viewModelScope.launch {
-            activeBuildings = buildingsRepo.loadBundled()
             curated = loadCurated()
-            _state.update {
-                it.copy(
-                    buildingsGeoJson = buildingsRepo.bundledGeoJson,
-                    sourceLabel = sourceLabel(center),
-                )
-            }
             scheduleRecompute(immediate = true)
+            // Fetch OSM buildings for the initial map center immediately.
+            maybeRoam(center)
         }
         viewModelScope.launch {
             store.userSpots.collect {
                 userSpots = it
                 scheduleRecompute()
             }
-        }
-        viewModelScope.launch {
-            store.allowRoaming.collect { allow -> _state.update { it.copy(allowRoaming = allow) } }
         }
     }
 
@@ -164,10 +155,6 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { store.remove(id) }
     }
 
-    fun setAllowRoaming(value: Boolean) {
-        viewModelScope.launch { store.setAllowRoaming(value) }
-    }
-
     fun onCameraIdle(newCenter: LatLng, newBounds: ClosedBounds) {
         center = newCenter
         bounds = newBounds
@@ -176,37 +163,22 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun maybeRoam(c: LatLng) {
-        if (buildingsRepo.isCovered(c)) {
-            if (activeBuildings !== buildingsRepo.allBundled()) {
-                activeBuildings = buildingsRepo.allBundled()
-                _state.update {
-                    it.copy(buildingsGeoJson = buildingsRepo.bundledGeoJson, sourceLabel = sourceLabel(c))
-                }
-                scheduleRecompute()
-            } else {
-                _state.update { it.copy(sourceLabel = sourceLabel(c)) }
-            }
-            return
-        }
-        if (!_state.value.allowRoaming) {
-            _state.update { it.copy(sourceLabel = "Outside Berlin · enable OSM in settings") }
-            return
-        }
         _state.update { it.copy(busy = true, sourceLabel = "Fetching OpenStreetMap…") }
         val fetched = buildingsRepo.fetchOsmAround(c)
-        activeBuildings = fetched
-        _state.update {
-            it.copy(
-                busy = false,
-                buildingsGeoJson = GeoJsonWriter.buildings(fetched),
-                sourceLabel = if (fetched.isEmpty()) "No OSM buildings here" else "OpenStreetMap · live",
-            )
+        if (fetched.isNotEmpty()) {
+            activeBuildings = fetched
+            _state.update {
+                it.copy(
+                    busy = false,
+                    buildingsGeoJson = GeoJsonWriter.buildings(fetched),
+                    sourceLabel = "OpenStreetMap · live",
+                )
+            }
+            scheduleRecompute()
+        } else {
+            _state.update { it.copy(busy = false, sourceLabel = "No buildings found") }
         }
-        scheduleRecompute()
     }
-
-    private fun sourceLabel(c: LatLng): String =
-        if (buildingsRepo.isCovered(c)) "Bundled Berlin · offline" else "Outside Berlin"
 
     private fun evaluatePoint(p: LatLng): SpotSunInfo {
         val now = instant()

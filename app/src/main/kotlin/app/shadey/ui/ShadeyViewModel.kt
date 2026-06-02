@@ -74,13 +74,14 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     private var center: LatLng = initialTarget
     private var bounds: ClosedBounds? = null
     private var recomputeJob: Job? = null
+    private var lastFetchCenter: LatLng? = null
+    private var roamJob: Job? = null
 
     init {
         viewModelScope.launch {
             curated = loadCurated()
             scheduleRecompute(immediate = true)
-            // Fetch OSM buildings for the initial map center immediately.
-            maybeRoam(center)
+            doRoam(center)
         }
         viewModelScope.launch {
             store.userSpots.collect {
@@ -158,14 +159,23 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     fun onCameraIdle(newCenter: LatLng, newBounds: ClosedBounds) {
         center = newCenter
         bounds = newBounds
-        viewModelScope.launch { maybeRoam(newCenter) }
         scheduleRecompute()
+        scheduleRoam(newCenter)
     }
 
-    private suspend fun maybeRoam(c: LatLng) {
+    private fun scheduleRoam(c: LatLng) {
+        val prev = lastFetchCenter
+        // Only fetch if we've never fetched, or moved more than 300 m from the last fetch.
+        if (prev != null && distanceMeters(prev, c) < 300.0) return
+        roamJob?.cancel()
+        roamJob = viewModelScope.launch { doRoam(c) }
+    }
+
+    private suspend fun doRoam(c: LatLng) {
         _state.update { it.copy(busy = true, sourceLabel = "Fetching OpenStreetMap…") }
         val fetched = runCatching { buildingsRepo.fetchOsmAround(c) }
         fetched.onSuccess { buildings ->
+            lastFetchCenter = c
             activeBuildings = buildings
             _state.update {
                 it.copy(
@@ -179,6 +189,15 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         fetched.onFailure { e ->
             _state.update { it.copy(busy = false, sourceLabel = "OSM error: ${e.message}") }
         }
+    }
+
+    private fun distanceMeters(a: LatLng, b: LatLng): Double {
+        val dLat = Math.toRadians(b.lat - a.lat)
+        val dLng = Math.toRadians(b.lng - a.lng)
+        val sinLat = Math.sin(dLat / 2)
+        val sinLng = Math.sin(dLng / 2)
+        val h = sinLat * sinLat + Math.cos(Math.toRadians(a.lat)) * Math.cos(Math.toRadians(b.lat)) * sinLng * sinLng
+        return 2 * 6_371_000 * Math.asin(Math.sqrt(h))
     }
 
     private fun evaluatePoint(p: LatLng): SpotSunInfo {

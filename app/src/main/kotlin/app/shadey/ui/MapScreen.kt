@@ -50,6 +50,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -155,7 +156,8 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
             }
         }
 
-        // Bottom control panel.
+        // Bottom control panel — collapsed by default, expandable to show spots.
+        var spotsExpanded by rememberSaveable { mutableStateOf(false) }
         Surface(
             modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth(),
             shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
@@ -163,7 +165,21 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
             tonalElevation = 4.dp,
             shadowElevation = 12.dp,
         ) {
-            Column(Modifier.fillMaxWidth().padding(16.dp)) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 16.dp)) {
+                // Drag handle — tap to toggle spots list
+                Box(
+                    Modifier.fillMaxWidth().clickable { spotsExpanded = !spotsExpanded },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Box(
+                        Modifier
+                            .padding(vertical = 10.dp)
+                            .size(width = 36.dp, height = 4.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f))
+                    )
+                }
+
                 state.dropped?.let { pin ->
                     DroppedCard(pin, zone, onSave = vm::saveDropped, onDismiss = vm::clearDropped)
                 }
@@ -203,31 +219,58 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
                     valueRange = 0f..1439f,
                 )
 
-                Text(
-                    "Sunniest spots",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Spacer(Modifier.height(4.dp))
-                LazyColumn(Modifier.fillMaxWidth().heightIn(max = 210.dp)) {
-                    items(state.ranked, key = { it.spot.id }) { info ->
-                        SpotRow(
-                            info,
-                            zone,
-                            selected = info.spot.id == state.selectedId,
-                            onClick = {
-                                vm.selectSpot(info.spot.id)
-                                vm.moveTo(app.shadey.core.model.LatLng(info.spot.lat, info.spot.lng))
-                            },
+                if (spotsExpanded) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Sunniest spots",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    LazyColumn(Modifier.fillMaxWidth().heightIn(max = 260.dp)) {
+                        items(state.ranked, key = { it.spot.id }) { info ->
+                            SpotRow(
+                                info,
+                                zone,
+                                selected = info.spot.id == state.selectedId,
+                                onClick = {
+                                    vm.selectSpot(info.spot.id)
+                                    vm.moveTo(app.shadey.core.model.LatLng(info.spot.lat, info.spot.lng))
+                                },
+                            )
+                        }
+                    }
+                } else if (state.ranked.isNotEmpty()) {
+                    // Compact summary row when collapsed
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { spotsExpanded = true }
+                            .padding(vertical = 6.dp),
+                    ) {
+                        val top = state.ranked.first()
+                        Box(
+                            Modifier.size(10.dp).clip(CircleShape)
+                                .background(Color(android.graphics.Color.parseColor(
+                                    app.shadey.map.GeoJsonWriter.colorFor(top.sunlight)
+                                )))
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            top.spot.name,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            "${state.ranked.size} spots ›",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
                         )
                     }
                 }
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    "Tip: tap anywhere on the map to check that exact spot.",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
-                )
             }
         }
 

@@ -3,6 +3,10 @@ package app.shadey.data
 import app.shadey.core.model.Building
 import app.shadey.core.model.LatLng
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.contentOrNull
@@ -40,30 +44,31 @@ class OverpassClient(
             "(way[\"building\"](${box.south},${box.west},${box.north},${box.east}););\n" +
             "out body geom;"
 
-        var lastError: String = "Unknown error"
-        for (url in endpoints) {
-            try {
-                val request = Request.Builder()
-                    .url(url)
-                    .header("User-Agent", "Shadey/1.0 (sun/shade app)")
-                    .post(FormBody.Builder().add("data", query).build())
-                    .build()
-                val body = client.newCall(request).execute().use { resp ->
-                    if (!resp.isSuccessful) {
-                        lastError = "HTTP ${resp.code} from $url"
-                        null
-                    } else {
-                        resp.body?.string()
-                    }
-                } ?: continue
-                val parsed = parse(body)
-                // An empty list here means "no buildings in this area", not an error.
-                return@withContext parsed
-            } catch (e: Exception) {
-                lastError = "${e.javaClass.simpleName}: ${e.message}"
+        // Race all mirrors in parallel; first successful response wins.
+        coroutineScope {
+            val winner = CompletableDeferred<List<Building>>()
+            val jobs = endpoints.map { url ->
+                async(Dispatchers.IO) {
+                    try {
+                        val req = Request.Builder()
+                            .url(url)
+                            .header("User-Agent", "Shadey/1.0 (sun/shade app)")
+                            .post(FormBody.Builder().add("data", query).build())
+                            .build()
+                        val result = client.newCall(req).execute().use { resp ->
+                            if (resp.isSuccessful) resp.body?.string()?.let(::parse) else null
+                        }
+                        if (result != null) winner.complete(result)
+                    } catch (_: Exception) { /* mirror failed, others may still win */ }
+                }
             }
+            // If all mirrors finish without a winner, fail.
+            launch {
+                jobs.forEach { it.join() }
+                winner.completeExceptionally(RuntimeException("All Overpass mirrors failed"))
+            }
+            winner.await().also { jobs.forEach { it.cancel() } }
         }
-        throw RuntimeException("Overpass unavailable: $lastError")
     }
 
     private fun parse(body: String): List<Building> {

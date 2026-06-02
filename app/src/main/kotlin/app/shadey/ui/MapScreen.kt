@@ -284,13 +284,13 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
 private fun ShadeyMapLayer(state: ShadeyUiState, vm: ShadeyViewModel) {
     app.shadey.map.ShadeyMap(
         initialTarget = vm.initialTarget,
-        buildingsGeoJson = state.buildingsGeoJson,
         shadowsGeoJson = state.shadowsGeoJson,
         spotsGeoJson = state.spotsGeoJson,
         pinGeoJson = state.pinGeoJson,
         cameraTarget = state.cameraTarget,
         onMapClick = vm::onMapClick,
         onCameraIdle = vm::onCameraIdle,
+        onBuildingsQueried = vm::onBuildingsQueried,
         onCameraTargetConsumed = vm::onCameraTargetConsumed,
         modifier = Modifier.fillMaxSize(),
     )

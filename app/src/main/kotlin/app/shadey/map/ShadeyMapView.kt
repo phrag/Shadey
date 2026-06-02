@@ -1,5 +1,6 @@
 package app.shadey.map
 
+import android.graphics.RectF
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -17,11 +18,13 @@ import app.shadey.core.model.LatLng as CoreLatLng
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng as MlLatLng
+import org.maplibre.geojson.FeatureCollection
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
 import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.CircleLayer
+import org.maplibre.android.style.layers.FillExtrusionLayer
 import org.maplibre.android.style.layers.FillLayer
 import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.sources.GeoJsonSource
@@ -39,13 +42,13 @@ private class MapHandle(val map: MapLibreMap, val style: Style)
 @Composable
 fun ShadeyMap(
     initialTarget: CoreLatLng,
-    buildingsGeoJson: String,
     shadowsGeoJson: String,
     spotsGeoJson: String,
     pinGeoJson: String,
     cameraTarget: CoreLatLng?,
     onMapClick: (CoreLatLng) -> Unit,
     onCameraIdle: (center: CoreLatLng, bounds: ClosedBounds) -> Unit,
+    onBuildingsQueried: (geoJson: String) -> Unit,
     onCameraTargetConsumed: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -87,7 +90,12 @@ fun ShadeyMap(
                         ),
                     )
                     map.setStyle(Style.Builder().fromUri("https://tiles.openfreemap.org/styles/liberty")) { style ->
-                        MapStyles.installLayers(style, buildingsGeoJson)
+                        MapStyles.installLayers(style)
+                        // Layer ids in the basemap that render building footprints (with heights).
+                        val buildingLayerIds = style.layers
+                            .filterIsInstance<FillExtrusionLayer>()
+                            .map { it.id }
+                            .toTypedArray()
                         map.addOnMapClickListener { p ->
                             onMapClick(CoreLatLng(p.latitude, p.longitude))
                             true
@@ -101,6 +109,14 @@ fun ShadeyMap(
                                     ClosedBounds(b.southWest.latitude, b.southWest.longitude, b.northEast.latitude, b.northEast.longitude),
                                 )
                             }
+                            // Harvest building footprints already rendered on screen — no network.
+                            if (buildingLayerIds.isNotEmpty()) {
+                                val rect = RectF(0f, 0f, mapView.width.toFloat(), mapView.height.toFloat())
+                                val features = map.queryRenderedFeatures(rect, *buildingLayerIds)
+                                if (features.isNotEmpty()) {
+                                    onBuildingsQueried(FeatureCollection.fromFeatures(features).toJson())
+                                }
+                            }
                         }
                         handle = MapHandle(map, style)
                     }
@@ -109,9 +125,6 @@ fun ShadeyMap(
         },
     )
 
-    LaunchedEffect(handle, buildingsGeoJson) {
-        handle?.style?.getSourceAs<GeoJsonSource>("buildings")?.setGeoJson(buildingsGeoJson)
-    }
     LaunchedEffect(handle, shadowsGeoJson) {
         handle?.style?.getSourceAs<GeoJsonSource>("shadows")?.setGeoJson(shadowsGeoJson)
     }
@@ -130,9 +143,8 @@ fun ShadeyMap(
 }
 
 private object MapStyles {
-    fun installLayers(style: Style, buildingsGeoJson: String) {
+    fun installLayers(style: Style) {
         style.addSource(GeoJsonSource("shadows", GeoJsonWriter.emptyCollection()))
-        style.addSource(GeoJsonSource("buildings", buildingsGeoJson))
         style.addSource(GeoJsonSource("spots", GeoJsonWriter.emptyCollection()))
         style.addSource(GeoJsonSource("pin", GeoJsonWriter.emptyCollection()))
 

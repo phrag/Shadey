@@ -3,6 +3,7 @@ package app.shadey.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import app.shadey.core.data.GeoJsonBuildings
 import app.shadey.core.data.SpotsJson
 import app.shadey.core.geo.LocalProjection
 import app.shadey.core.model.Building
@@ -15,7 +16,6 @@ import app.shadey.core.rank.SpotSunInfo
 import app.shadey.core.shade.ShadowEngine
 import app.shadey.core.solar.SolarCalculator
 import app.shadey.data.BoundingBox
-import app.shadey.data.BuildingRepository
 import app.shadey.data.SavedSpotsStore
 import app.shadey.data.centroid
 import app.shadey.map.ClosedBounds
@@ -43,7 +43,6 @@ data class ShadeyUiState(
     val ranked: List<SpotSunInfo> = emptyList(),
     val selectedId: String? = null,
     val dropped: DroppedPin? = null,
-    val buildingsGeoJson: String = GeoJsonWriter.emptyCollection(),
     val shadowsGeoJson: String = GeoJsonWriter.emptyCollection(),
     val spotsGeoJson: String = GeoJsonWriter.emptyCollection(),
     val pinGeoJson: String = GeoJsonWriter.emptyCollection(),
@@ -56,7 +55,6 @@ data class ShadeyUiState(
 
 class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
 
-    private val buildingsRepo = BuildingRepository(app)
     private val store = SavedSpotsStore(app)
     private val engine = ShadowEngine()
     private val ranker = SpotRanker(engine)
@@ -65,7 +63,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     private val _state = MutableStateFlow(ShadeyUiState())
     val state: StateFlow<ShadeyUiState> = _state.asStateFlow()
 
-    /** Boxhagener Platz — where the bundled sample data lives. */
+    /** Boxhagener Platz, Berlin — the initial map centre. */
     val initialTarget = LatLng(52.51028, 13.45853)
 
     private var curated: List<Spot> = emptyList()
@@ -74,14 +72,12 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     private var center: LatLng = initialTarget
     private var bounds: ClosedBounds? = null
     private var recomputeJob: Job? = null
-    private var lastFetchCenter: LatLng? = null
-    private var roamJob: Job? = null
+    private var buildingsJob: Job? = null
 
     init {
         viewModelScope.launch {
             curated = loadCurated()
             scheduleRecompute(immediate = true)
-            doRoam(center)
         }
         viewModelScope.launch {
             store.userSpots.collect {
@@ -160,50 +156,24 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         center = newCenter
         bounds = newBounds
         scheduleRecompute()
-        scheduleRoam(newCenter)
     }
 
-    private fun scheduleRoam(c: LatLng) {
-        val prev = lastFetchCenter
-        // Only fetch if we've never fetched, or moved more than 300 m from the last fetch.
-        if (prev != null && distanceMeters(prev, c) < 500.0) return
-        roamJob?.cancel()
-        roamJob = viewModelScope.launch { doRoam(c) }
-    }
-
-    private suspend fun doRoam(c: LatLng) {
-        _state.update { it.copy(busy = true) }
-        val fetched = runCatching { buildingsRepo.fetchOsmAround(c) }
-        fetched.onSuccess { buildings ->
-            lastFetchCenter = c
+    /**
+     * Building footprints harvested directly from the rendered map tiles (no network).
+     * Parsed off the main thread and fed straight into the shadow engine.
+     */
+    fun onBuildingsQueried(geoJson: String) {
+        buildingsJob?.cancel()
+        buildingsJob = viewModelScope.launch {
+            val buildings = withContext(Dispatchers.Default) { GeoJsonBuildings.parse(geoJson) }
             activeBuildings = buildings
             _state.update {
                 it.copy(
-                    busy = false,
-                    buildingsGeoJson = GeoJsonWriter.buildings(buildings),
-                    sourceLabel = if (buildings.isEmpty()) "No buildings in this area" else "OpenStreetMap · ${buildings.size} buildings",
+                    sourceLabel = if (buildings.isEmpty()) "No buildings here" else "OpenStreetMap · ${buildings.size} buildings",
                 )
             }
-            if (buildings.isNotEmpty()) scheduleRecompute()
+            scheduleRecompute()
         }
-        fetched.onFailure { e ->
-            // CancellationException means a newer fetch superseded this one — keep existing data.
-            if (e is kotlinx.coroutines.CancellationException) {
-                _state.update { it.copy(busy = false) }
-                return
-            }
-            // Network error: keep whatever buildings we already have, just note the issue.
-            _state.update { it.copy(busy = false, sourceLabel = if (activeBuildings.isEmpty()) "OSM unavailable — move map to retry" else "OpenStreetMap · ${activeBuildings.size} buildings (cached)") }
-        }
-    }
-
-    private fun distanceMeters(a: LatLng, b: LatLng): Double {
-        val dLat = Math.toRadians(b.lat - a.lat)
-        val dLng = Math.toRadians(b.lng - a.lng)
-        val sinLat = Math.sin(dLat / 2)
-        val sinLng = Math.sin(dLng / 2)
-        val h = sinLat * sinLat + Math.cos(Math.toRadians(a.lat)) * Math.cos(Math.toRadians(b.lat)) * sinLng * sinLng
-        return 2 * 6_371_000 * Math.asin(Math.sqrt(h))
     }
 
     private fun evaluatePoint(p: LatLng): SpotSunInfo {

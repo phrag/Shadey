@@ -97,7 +97,7 @@ fun ShadeyMap(
                             if (center != null) {
                                 onCameraIdle(
                                     CoreLatLng(center.latitude, center.longitude),
-                                    ClosedBounds(b.latSouth, b.lonWest, b.latNorth, b.lonEast),
+                                    ClosedBounds(b.southLatitude, b.westLongitude, b.northLatitude, b.eastLongitude),
                                 )
                             }
                         }

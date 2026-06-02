@@ -23,18 +23,20 @@ class OverpassClient(
     private val endpoints: List<String> = listOf(
         "https://overpass-api.de/api/interpreter",
         "https://overpass.kumi.systems/api/interpreter",
+        "https://overpass.private.coffee/api/interpreter",
+        "https://overpass.openstreetmap.ru/cgi/interpreter",
     ),
 ) {
     private val client = OkHttpClient.Builder()
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
     private val json = Json { ignoreUnknownKeys = true }
 
     /** Returns buildings, or throws an exception describing what went wrong. */
     suspend fun fetchBuildings(box: BoundingBox): List<Building> = withContext(Dispatchers.IO) {
-        val query = "[out:json][timeout:60];\n" +
+        val query = "[out:json][timeout:25];\n" +
             "(way[\"building\"](${box.south},${box.west},${box.north},${box.east}););\n" +
             "out body geom;"
 

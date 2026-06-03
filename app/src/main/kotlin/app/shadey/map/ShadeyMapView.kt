@@ -120,7 +120,9 @@ fun ShadeyMap(
                                 if (features.isNotEmpty()) onBuildingsQueried(features)
                             }
                         }
-                        map.addOnDidFinishRenderingMapListener { fully -> if (fully) queryBuildings() }
+                        mapView.addOnDidFinishRenderingMapListener(
+                            MapView.OnDidFinishRenderingMapListener { fully -> if (fully) queryBuildings() }
+                        )
                         handle = MapHandle(map, style)
                     }
                 }

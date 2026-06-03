@@ -3,6 +3,7 @@ package app.shadey.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import app.shadey.core.data.GeoJsonBuildings
 import app.shadey.core.data.SpotsJson
 import app.shadey.core.model.Building
 import app.shadey.core.model.LatLng
@@ -67,6 +68,8 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     private var curated: List<Spot> = emptyList()
     private var userSpots: List<Spot> = emptyList()
     private var activeBuildings: List<Building> = emptyList()
+    private var bundledBuildings: List<Building> = emptyList()
+    private var bundledRegion: BoundingBox? = null
     private var center: LatLng = initialTarget
     private var bounds: ClosedBounds? = null
     private var recomputeJob: Job? = null
@@ -79,6 +82,12 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     init {
         viewModelScope.launch {
             curated = loadCurated()
+            bundledBuildings = loadBundledBuildings()
+            if (bundledBuildings.isNotEmpty()) {
+                bundledRegion = BoundingBox.ofBuildings(bundledBuildings)
+                activeBuildings = bundledBuildings
+                _state.update { it.copy(sourceLabel = "Berlin · ${bundledBuildings.size} buildings") }
+            }
             scheduleRecompute(immediate = true)
         }
         viewModelScope.launch {
@@ -157,6 +166,12 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     fun onCameraIdle(newCenter: LatLng, newBounds: ClosedBounds) {
         center = newCenter
         bounds = newBounds
+        // Swap back to bundled data when returning from outside the bundled region.
+        if (bundledRegion?.contains(newCenter) == true && activeBuildings !== bundledBuildings) {
+            activeBuildings = bundledBuildings
+            shadowCache.clear()
+            _state.update { it.copy(sourceLabel = "Berlin · ${bundledBuildings.size} buildings") }
+        }
         scheduleRecompute()
     }
 
@@ -165,6 +180,8 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
      * Parsed off the main thread and fed straight into the shadow engine.
      */
     fun onBuildingsQueried(features: List<org.maplibre.geojson.Feature>) {
+        // Bundled data is more complete than tile queries — skip when inside the bundled region.
+        if (bundledRegion?.contains(center) == true) return
         buildingsJob?.cancel()
         buildingsJob = viewModelScope.launch {
             val buildings = withContext(Dispatchers.Default) {
@@ -234,6 +251,13 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                 )
             }
         }
+    }
+
+    private suspend fun loadBundledBuildings(): List<Building> = withContext(Dispatchers.IO) {
+        runCatching {
+            getApplication<Application>().assets.open("data/berlin_buildings.geojson")
+                .bufferedReader().use { it.readText() }
+        }.getOrNull()?.let { GeoJsonBuildings.parse(it) } ?: emptyList()
     }
 
     private suspend fun loadCurated(): List<Spot> = withContext(Dispatchers.IO) {

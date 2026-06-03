@@ -41,8 +41,12 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
-      - name: Generate sample building data
-        run: python3 data-pipeline/make_sample.py
+      - name: Fetch Berlin building data
+        run: |
+          pip install requests
+          python3 data-pipeline/fetch_osm.py \
+            --bbox 52.46 13.33 52.57 13.53 \
+            --out app/src/main/assets/data/berlin_buildings.geojson
 
       - name: Run core engine unit tests
         run: ./gradlew :core:test --stacktrace

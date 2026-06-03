@@ -100,6 +100,7 @@ fun ShadeyMap(
                             onMapClick(CoreLatLng(p.latitude, p.longitude))
                             true
                         }
+                        // Report camera position as soon as it stops (tiles may still be loading).
                         map.addOnCameraIdleListener {
                             val center = map.cameraPosition.target
                             val b = map.projection.visibleRegion.latLngBounds
@@ -109,13 +110,17 @@ fun ShadeyMap(
                                     ClosedBounds(b.southWest.latitude, b.southWest.longitude, b.northEast.latitude, b.northEast.longitude),
                                 )
                             }
-                            // Harvest building footprints already rendered on screen — no network.
+                        }
+                        // Query buildings only once tiles are fully rendered — fires on initial
+                        // load and again whenever the map finishes loading after a pan/zoom.
+                        fun queryBuildings() {
                             if (buildingLayerIds.isNotEmpty()) {
                                 val rect = RectF(0f, 0f, mapView.width.toFloat(), mapView.height.toFloat())
                                 val features = map.queryRenderedFeatures(rect, *buildingLayerIds)
                                 if (features.isNotEmpty()) onBuildingsQueried(features)
                             }
                         }
+                        map.addOnDidBecomeIdleListener { queryBuildings() }
                         handle = MapHandle(map, style)
                     }
                 }

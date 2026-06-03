@@ -46,7 +46,10 @@ jobs:
           pip install requests
           python3 data-pipeline/fetch_osm.py \
             --bbox 52.46 13.33 52.57 13.53 \
-            --out app/src/main/assets/data/berlin_buildings.geojson
+            --out app/src/main/assets/data/berlin_buildings.geojson \
+          || { echo "Overpass unavailable — using bundled sample data"; \
+               cp app/src/main/assets/data/sample_buildings.geojson \
+                  app/src/main/assets/data/berlin_buildings.geojson; }
 
       - name: Run core engine unit tests
         run: ./gradlew :core:test --stacktrace

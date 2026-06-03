@@ -225,7 +225,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
             val frozenCenter = center
             val frozenBuildings = activeBuildings
             val (ranked, shadowRings) = withContext(Dispatchers.Default) {
-                val r = ranker.rank(spots, now) { buildingsNear(it.latLng, frozenBuildings) }
+                val r = ranker.rank(spots, now) { buildingsNear(it.latLng, frozenBuildings, radiusMeters = 150.0) }
                 val sun = SolarCalculator.position(frozenCenter, now)
                 // Sun bucket — shadows are visually identical within ~0.5°, so we cache per
                 // (building, sun bucket). Panning at a fixed time is then near-instant.

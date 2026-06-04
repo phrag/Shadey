@@ -60,6 +60,8 @@ data class ShadeyUiState(
     val cachedCities: List<CachedCity> = emptyList(),
     val cityBusy: Boolean = false,
     val cityStatus: String? = null,
+    /** True when there's no usable building data yet, so the UI should prompt for a city. */
+    val promptCity: Boolean = false,
 ) {
     val selected: SpotSunInfo? get() = ranked.firstOrNull { it.spot.id == selectedId }
 }
@@ -130,7 +132,13 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                 val b = withContext(Dispatchers.Default) { GeoJsonBuildings.parse(lastGeo) }
                 if (b.isNotEmpty()) { activateCity(lastCity, b); true } else false
             } else false
-            if (!restored) recompute(rank = true, immediate = true)
+            if (!restored) {
+                recompute(rank = true, immediate = true)
+                // Nothing usable bundled and nothing downloaded yet — guide the user to pick a city.
+                if (bundledRegion == null && cached.isEmpty()) {
+                    _state.update { it.copy(promptCity = true) }
+                }
+            }
         }
         viewModelScope.launch {
             store.userSpots.collect {
@@ -284,6 +292,8 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun clearCitySearch() = _state.update { it.copy(citySearch = emptyList(), cityStatus = null) }
+
+    fun dismissCityPrompt() = _state.update { it.copy(promptCity = false) }
 
     /** Download a searched city's buildings, cache them, and switch to it. */
     fun downloadCity(hit: CityHit) {

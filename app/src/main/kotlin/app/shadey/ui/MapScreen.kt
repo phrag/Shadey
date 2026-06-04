@@ -51,6 +51,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -79,6 +80,14 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
     var showSettings by remember { mutableStateOf(false) }
     var showCities by remember { mutableStateOf(false) }
     val context = LocalContext.current
+
+    // On first launch with no usable data, guide the user straight to picking a city.
+    LaunchedEffect(state.promptCity) {
+        if (state.promptCity) {
+            showCities = true
+            vm.dismissCityPrompt()
+        }
+    }
 
     fun getAndMoveToLocation() {
         val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager

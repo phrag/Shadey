@@ -1,6 +1,8 @@
 package app.shadey.map
 
 import android.graphics.RectF
+import android.os.Handler
+import android.os.Looper
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -33,6 +35,9 @@ data class ClosedBounds(val south: Double, val west: Double, val north: Double, 
 
 /** OpenMapTiles only carries the "building" layer at z14+, so shadows need at least this zoom. */
 private const val BUILDING_MIN_ZOOM = 14.0
+
+/** Milliseconds to wait before executing a building query after the last trigger fires. */
+private const val QUERY_DEBOUNCE_MS = 400L
 
 private class MapHandle(val map: MapLibreMap, val style: Style)
 
@@ -106,10 +111,15 @@ fun ShadeyMap(
                             onMapClick(CoreLatLng(p.latitude, p.longitude))
                             true
                         }
-                        fun queryBuildings() {
+                        // Debounced building query — camera-idle and render-finish can both fire
+                        // many times per pan (once per tile zoom level as tiles arrive). We post
+                        // a delayed runnable and cancel any pending one, so only the last event
+                        // in a burst actually executes the query.
+                        val queryHandler = Handler(Looper.getMainLooper())
+                        val queryRunnable = Runnable {
                             if (map.cameraPosition.zoom < BUILDING_MIN_ZOOM) {
                                 onBuildingsQueried(emptyList(), true)
-                                return
+                                return@Runnable
                             }
                             if (buildingLayerIds.isNotEmpty()) {
                                 val rect = RectF(0f, 0f, mapView.width.toFloat(), mapView.height.toFloat())
@@ -117,10 +127,10 @@ fun ShadeyMap(
                                 onBuildingsQueried(features, false)
                             }
                         }
-                        // Fire on both camera-idle (immediate on pan) and render-finish (when tiles
-                        // have loaded after the camera settled). Both are needed: camera-idle fires
-                        // fast but tiles may not be ready; render-finish fires once everything is
-                        // drawn but can lag behind on slow connections.
+                        fun scheduleQuery() {
+                            queryHandler.removeCallbacks(queryRunnable)
+                            queryHandler.postDelayed(queryRunnable, QUERY_DEBOUNCE_MS)
+                        }
                         map.addOnCameraIdleListener {
                             val center = map.cameraPosition.target
                             val b = map.projection.visibleRegion.latLngBounds
@@ -130,10 +140,10 @@ fun ShadeyMap(
                                     ClosedBounds(b.southWest.latitude, b.southWest.longitude, b.northEast.latitude, b.northEast.longitude),
                                 )
                             }
-                            queryBuildings()
+                            scheduleQuery()
                         }
                         mapView.addOnDidFinishRenderingMapListener(
-                            MapView.OnDidFinishRenderingMapListener { fully -> if (fully) queryBuildings() }
+                            MapView.OnDidFinishRenderingMapListener { fully -> if (fully) scheduleQuery() }
                         )
                         handle = MapHandle(map, style)
                     }

@@ -243,7 +243,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                 // Sun bucket — shadows are visually identical within ~0.5°, so we cache per
                 // (building, sun bucket). Panning at a fixed time is then near-instant.
                 val sunKey = "${(sun.azimuthDeg * 2).toInt()}_${(sun.elevationDeg * 2).toInt()}"
-                if (sunKey != shadowCacheSunKey || shadowCache.size > 8000) {
+                if (sunKey != shadowCacheSunKey || shadowCache.size > MAX_CACHE_ENTRIES) {
                     shadowCache.clear()
                     shadowCacheSunKey = sunKey
                 }
@@ -288,8 +288,9 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private companion object {
-        const val MAX_SHADOWS = 300
+        const val MAX_SHADOWS = 150
         val EMPTY_RING = emptyList<LatLng>()
         const val MIN_BUNDLED_BUILDINGS = 1000
+        const val MAX_CACHE_ENTRIES = 1500
     }
 }

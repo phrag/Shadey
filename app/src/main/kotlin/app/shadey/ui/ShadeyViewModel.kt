@@ -196,11 +196,15 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
             val buildings = withContext(Dispatchers.Default) {
                 app.shadey.map.featuresToBuildings(features)
             }
-            activeBuildings = buildings
-            _state.update {
-                it.copy(sourceLabel = if (buildings.isEmpty()) "No buildings here" else "OpenStreetMap · ${buildings.size} buildings")
+            // Only replace the active set when we actually got buildings back. An empty result
+            // means tiles aren't rendered yet at this moment (zoom transition, eviction, etc.) —
+            // keeping the previous set avoids shadows blinking out between camera events.
+            if (buildings.isNotEmpty()) {
+                activeBuildings = buildings
+                shadowCache.clear()
+                _state.update { it.copy(sourceLabel = "OpenStreetMap · ${buildings.size} buildings") }
+                scheduleRecompute()
             }
-            scheduleRecompute()
         }
     }
 

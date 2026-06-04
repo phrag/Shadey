@@ -10,6 +10,7 @@ import app.shadey.core.model.LatLng
 import app.shadey.core.model.Spot
 import app.shadey.core.model.SpotCategory
 import app.shadey.core.model.SpotSource
+import app.shadey.core.model.Sunlight
 import app.shadey.core.rank.SpotRanker
 import app.shadey.core.rank.SpotSunInfo
 import app.shadey.core.shade.ShadowEngine
@@ -76,6 +77,15 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     private var bounds: ClosedBounds? = null
     private var recomputeJob: Job? = null
     private var buildingsJob: Job? = null
+    private var frameJob: Job? = null
+    private var settleJob: Job? = null
+
+    // Precomputed "shadow movie" for the current view + date: a shadow (and spot-colour) frame
+    // per FRAME_STEP-minute bucket of the day. Once built, scrubbing the time slider is a pure
+    // map lookup with zero geometry work, so it feels instant.
+    private val shadowFrames = java.util.concurrent.ConcurrentHashMap<Int, String>()
+    private val spotFrames = java.util.concurrent.ConcurrentHashMap<Int, String>()
+    @Volatile private var framesViewKey: String? = null
 
     // Per-building shadow cache, valid while the sun bucket is unchanged. Keyed by building id.
     // It persists across pans/zooms so revealing a previously-seen area is instant.
@@ -113,8 +123,24 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         s.date.atStartOfDay(zone).plusMinutes(s.timeMinutes.toLong()).toInstant()
 
     fun setTime(minutes: Int) {
-        _state.update { it.copy(timeMinutes = minutes.coerceIn(0, 1439), isNow = false) }
-        recompute(rank = true)
+        val m = minutes.coerceIn(0, 1439)
+        _state.update { it.copy(timeMinutes = m, isNow = false) }
+        // Instant path: if the day's frames are built for this view, just swap in the frame.
+        val frame = if (framesViewKey == viewKey()) shadowFrames[bucketOf(m)] else null
+        if (frame != null) {
+            val spotFrame = spotFrames[bucketOf(m)]
+            _state.update {
+                it.copy(shadowsGeoJson = frame, spotsGeoJson = spotFrame ?: it.spotsGeoJson)
+            }
+        } else {
+            recompute(rank = false) // frames not ready yet — compute this instant on the fly
+        }
+        // Once scrubbing stops, do the exact ranking (with next-change times) for the spot list.
+        settleJob?.cancel()
+        settleJob = viewModelScope.launch {
+            delay(250)
+            recompute(rank = true)
+        }
     }
 
     fun resetToNow() {
@@ -265,9 +291,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                     shadowCache.clear()
                     shadowCacheSunKey = sunKey
                 }
-                val rings = buildingsInView(frozenCenter, frozenBuildings)
-                    .sortedBy { distanceSq(frozenCenter, it.centroid()) }
-                    .take(MAX_SHADOWS)
+                val rings = inViewBuildings(frozenCenter, frozenBuildings)
                     .mapNotNull { b ->
                         shadowCache.getOrPut(b.id) { engine.castShadow(b, sun) ?: EMPTY_RING }
                             .takeIf { it.isNotEmpty() }
@@ -287,6 +311,76 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                     ranked = ranked ?: it.ranked,
                     spotsGeoJson = if (ranked != null) GeoJsonWriter.spots(ranked) else it.spotsGeoJson,
                 )
+            }
+            // Build the day's frames for this view in the background so scrubbing is instant.
+            precomputeFrames()
+        }
+    }
+
+    /** Buildings to cast shadows for: those in view, closest first, capped for performance. */
+    private fun inViewBuildings(c: LatLng, buildings: List<Building>): List<Building> =
+        buildingsInView(c, buildings)
+            .sortedBy { distanceSq(c, it.centroid()) }
+            .take(MAX_SHADOWS)
+
+    private fun bucketOf(minutes: Int): Int = (minutes / FRAME_STEP_MIN) * FRAME_STEP_MIN
+
+    /** Identifies the view + date the frames are valid for. Rounded so tiny jitter doesn't bust it. */
+    private fun viewKey(): String {
+        val b = bounds
+        val box = if (b != null)
+            "${(b.south * 1000).toInt()}_${(b.west * 1000).toInt()}_${(b.north * 1000).toInt()}_${(b.east * 1000).toInt()}"
+        else "none"
+        return "$box|${_state.value.date}|${activeBuildings.size}"
+    }
+
+    private fun rankBucket(s: Sunlight) = when (s) {
+        Sunlight.SUN -> 0
+        Sunlight.SHADE -> 1
+        Sunlight.NIGHT -> 2
+    }
+
+    /**
+     * Precompute a shadow + spot-colour frame for every daylight bucket of the current day, for
+     * the buildings in the current view. Runs once per view (skipped if already built) and is
+     * cancelled when the view changes. After it completes, [setTime] is a pure lookup.
+     */
+    private fun precomputeFrames() {
+        val key = viewKey()
+        if (framesViewKey == key) return
+        frameJob?.cancel()
+        val frozenCenter = center
+        val frozenBuildings = activeBuildings
+        val date = _state.value.date
+        val spots = (curated + userSpots).distinctBy { it.id }
+        frameJob = viewModelScope.launch(Dispatchers.Default) {
+            val inView = inViewBuildings(frozenCenter, frozenBuildings)
+            val near = spots.associate { it.id to buildingsNear(it.latLng, frozenBuildings, radiusMeters = 150.0) }
+            val shadows = HashMap<Int, String>()
+            val spotsByBucket = HashMap<Int, String>()
+            var m = 0
+            while (m <= 1439) {
+                if (!isActive) return@launch
+                val t = date.atStartOfDay(zone).plusMinutes(m.toLong()).toInstant()
+                val sun = SolarCalculator.position(frozenCenter, t)
+                shadows[m] = if (sun.elevationDeg > 0.5) {
+                    GeoJsonWriter.shadows(inView.mapNotNull { engine.castShadow(it, sun)?.takeIf { r -> r.isNotEmpty() } })
+                } else {
+                    GeoJsonWriter.emptyCollection()
+                }
+                val infos = spots.map { s ->
+                    val ss = SolarCalculator.position(s.latLng, t)
+                    val light = if (ss.elevationDeg <= 0.0) Sunlight.NIGHT
+                        else engine.sunlightAt(s.latLng, ss, near[s.id] ?: emptyList())
+                    SpotSunInfo(s, light, ss, null)
+                }.sortedWith(compareBy({ rankBucket(it.sunlight) }, { -it.solar.elevationDeg }))
+                spotsByBucket[m] = GeoJsonWriter.spots(infos)
+                m += FRAME_STEP_MIN
+            }
+            if (isActive) {
+                shadowFrames.clear(); shadowFrames.putAll(shadows)
+                spotFrames.clear(); spotFrames.putAll(spotsByBucket)
+                framesViewKey = key
             }
         }
     }
@@ -318,5 +412,6 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         const val MIN_BUNDLED_BUILDINGS = 1000
         const val MAX_CACHE_ENTRIES = 6000
         const val MAX_ACCUMULATED = 8000
+        const val FRAME_STEP_MIN = 10
     }
 }

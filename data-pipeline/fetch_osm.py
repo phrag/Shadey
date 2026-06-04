@@ -47,22 +47,28 @@ def overpass_query(bbox):
     """
 
 
-def fetch(bbox):
+def fetch(bbox, attempts_per_endpoint=3):
+    """Try each endpoint several times with exponential backoff. Overpass 504/timeouts are
+    common under load, so a few retries on the primary endpoint usually succeed."""
     query = overpass_query(bbox)
     last_err = None
     for url in OVERPASS_ENDPOINTS:
-        try:
-            print(f"Querying {url} ...", file=sys.stderr)
-            r = requests.post(url, data={"data": query}, timeout=300,
-                              headers={"User-Agent": "Shadey/1.0 (+https://github.com/phrag/shadey)"})
-            if r.status_code == 200:
-                return r.json()
-            print(f"  HTTP {r.status_code}", file=sys.stderr)
-            last_err = RuntimeError(f"HTTP {r.status_code}")
-        except Exception as exc:  # noqa: BLE001
-            print(f"  failed: {exc}", file=sys.stderr)
-            last_err = exc
-        time.sleep(2)
+        for attempt in range(1, attempts_per_endpoint + 1):
+            try:
+                print(f"Querying {url} (attempt {attempt}/{attempts_per_endpoint}) ...", file=sys.stderr)
+                r = requests.post(url, data={"data": query}, timeout=300,
+                                  headers={"User-Agent": "Shadey/1.0 (+https://github.com/phrag/shadey)"})
+                if r.status_code == 200:
+                    return r.json()
+                print(f"  HTTP {r.status_code}", file=sys.stderr)
+                last_err = RuntimeError(f"HTTP {r.status_code}")
+                # 403/400 won't fix themselves on retry — move to the next endpoint.
+                if r.status_code in (400, 403, 429):
+                    break
+            except Exception as exc:  # noqa: BLE001
+                print(f"  failed: {exc}", file=sys.stderr)
+                last_err = exc
+            time.sleep(2 ** attempt)  # 2s, 4s, 8s
     raise SystemExit(f"All Overpass endpoints failed: {last_err}")
 
 

@@ -16,6 +16,11 @@ import app.shadey.core.rank.SpotSunInfo
 import app.shadey.core.shade.ShadowEngine
 import app.shadey.core.solar.SolarCalculator
 import app.shadey.data.BoundingBox
+import app.shadey.data.BuildingDownloader
+import app.shadey.data.CachedCity
+import app.shadey.data.CityHit
+import app.shadey.data.CityStore
+import app.shadey.data.Geocoder
 import app.shadey.data.SavedSpotsStore
 import app.shadey.data.centroid
 import app.shadey.map.ClosedBounds
@@ -50,6 +55,11 @@ data class ShadeyUiState(
     val sourceLabel: String = "Loading…",
     val busy: Boolean = false,
     val cameraTarget: LatLng? = null,
+    // City download UI.
+    val citySearch: List<CityHit> = emptyList(),
+    val cachedCities: List<CachedCity> = emptyList(),
+    val cityBusy: Boolean = false,
+    val cityStatus: String? = null,
 ) {
     val selected: SpotSunInfo? get() = ranked.firstOrNull { it.spot.id == selectedId }
 }
@@ -57,6 +67,8 @@ data class ShadeyUiState(
 class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
 
     private val store = SavedSpotsStore(app)
+    private val cityStore = CityStore(app.filesDir)
+    private var searchJob: Job? = null
     private val engine = ShadowEngine()
     private val ranker = SpotRanker(engine)
     private val zone: ZoneId = ZoneId.systemDefault()
@@ -108,7 +120,17 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                 activeBuildings = bundledBuildings
                 _state.update { it.copy(sourceLabel = "Berlin · ${bundledBuildings.size} buildings") }
             }
-            recompute(rank = true, immediate = true)
+            // If the user has downloaded a city before, restore it (it wins over bundled Berlin).
+            val cached = withContext(Dispatchers.IO) { cityStore.list() }
+            _state.update { it.copy(cachedCities = cached) }
+            val last = withContext(Dispatchers.IO) { cityStore.lastUsedSlug() }
+            val lastCity = cached.firstOrNull { it.slug == last }
+            val lastGeo = last?.let { withContext(Dispatchers.IO) { cityStore.geoJsonOf(it) } }
+            val restored = if (lastCity != null && lastGeo != null) {
+                val b = withContext(Dispatchers.Default) { GeoJsonBuildings.parse(lastGeo) }
+                if (b.isNotEmpty()) { activateCity(lastCity, b); true } else false
+            } else false
+            if (!restored) recompute(rank = true, immediate = true)
         }
         viewModelScope.launch {
             store.userSpots.collect {
@@ -244,6 +266,79 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
             _state.update { it.copy(sourceLabel = "OpenStreetMap · ${activeBuildings.size} buildings") }
             recompute()
         }
+    }
+
+    // --- City download (worldwide coverage) -------------------------------------------------
+
+    /** Search OpenStreetMap for a city/place to download. */
+    fun searchCities(query: String) {
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch {
+            _state.update { it.copy(cityBusy = true, cityStatus = null) }
+            val hits = runCatching { Geocoder.search(query) }.getOrDefault(emptyList())
+            _state.update {
+                it.copy(cityBusy = false, citySearch = hits,
+                    cityStatus = if (hits.isEmpty()) "No matches — try another name" else null)
+            }
+        }
+    }
+
+    fun clearCitySearch() = _state.update { it.copy(citySearch = emptyList(), cityStatus = null) }
+
+    /** Download a searched city's buildings, cache them, and switch to it. */
+    fun downloadCity(hit: CityHit) {
+        viewModelScope.launch {
+            _state.update { it.copy(cityBusy = true, cityStatus = "Downloading ${hit.name}…") }
+            try {
+                val bbox = BuildingDownloader.clampedBbox(hit)
+                val geoJson = BuildingDownloader.downloadGeoJson(bbox)
+                val buildings = withContext(Dispatchers.Default) { GeoJsonBuildings.parse(geoJson) }
+                if (buildings.isEmpty()) {
+                    _state.update { it.copy(cityBusy = false, cityStatus = "No buildings found there") }
+                    return@launch
+                }
+                val city = CachedCity(
+                    CityStore.slugOf(hit.name), hit.name, hit.lat, hit.lng,
+                    bbox[0], bbox[1], bbox[2], bbox[3], buildings.size,
+                )
+                val updated = withContext(Dispatchers.IO) { cityStore.save(city, geoJson); cityStore.list() }
+                activateCity(city, buildings)
+                _state.update {
+                    it.copy(cityBusy = false, cityStatus = null, citySearch = emptyList(),
+                        cachedCities = updated)
+                }
+            } catch (e: Exception) {
+                _state.update { it.copy(cityBusy = false, cityStatus = e.message ?: "Download failed") }
+            }
+        }
+    }
+
+    /** Switch to an already-downloaded city (works offline, instant). */
+    fun useCity(slug: String) {
+        viewModelScope.launch {
+            val geoJson = withContext(Dispatchers.IO) { cityStore.geoJsonOf(slug) } ?: return@launch
+            val city = withContext(Dispatchers.IO) { cityStore.list() }.firstOrNull { it.slug == slug } ?: return@launch
+            val buildings = withContext(Dispatchers.Default) { GeoJsonBuildings.parse(geoJson) }
+            if (buildings.isEmpty()) return@launch
+            withContext(Dispatchers.IO) { cityStore.setLastUsed(slug) }
+            activateCity(city, buildings)
+        }
+    }
+
+    /** Make a downloaded city the active region: its data drives shadows and the map jumps to it. */
+    private fun activateCity(city: CachedCity, buildings: List<Building>) {
+        bundledBuildings = buildings
+        bundledRegion = BoundingBox(city.south, city.west, city.north, city.east)
+        activeBuildings = buildings
+        accumulated.clear()
+        shadowCache.clear()
+        shadowCacheSunKey = null
+        framesViewKey = null
+        center = LatLng(city.lat, city.lng)
+        _state.update {
+            it.copy(sourceLabel = "${city.name} · ${buildings.size} buildings", cameraTarget = center)
+        }
+        recompute(rank = true, immediate = true)
     }
 
     private fun evaluatePoint(p: LatLng): SpotSunInfo {

@@ -8,6 +8,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -30,7 +32,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material3.AlertDialog
@@ -73,6 +77,7 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
     val state by vm.state.collectAsStateWithLifecycle()
     val zone = remember { vm.zone() }
     var showSettings by remember { mutableStateOf(false) }
+    var showCities by remember { mutableStateOf(false) }
     val context = LocalContext.current
 
     fun getAndMoveToLocation() {
@@ -137,6 +142,16 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
             ) {
                 IconButton(onClick = { showSettings = true }) {
                     Icon(Icons.Filled.Settings, "Settings")
+                }
+            }
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+                tonalElevation = 3.dp,
+                shadowElevation = 3.dp,
+            ) {
+                IconButton(onClick = { showCities = true }) {
+                    Icon(Icons.Filled.Public, "Cities")
                 }
             }
             FloatingActionButton(
@@ -277,7 +292,92 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
         if (showSettings) {
             SettingsDialog(onDismiss = { showSettings = false })
         }
+        if (showCities) {
+            CitiesDialog(state, vm, onDismiss = { showCities = false })
+        }
     }
+}
+
+@Composable
+private fun CitiesDialog(state: ShadeyUiState, vm: ShadeyViewModel, onDismiss: () -> Unit) {
+    var query by rememberSaveable { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+        title = { Text("Cities") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text(
+                    "Download a city's buildings once — it then works offline and instantly.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                )
+                Spacer(Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        singleLine = true,
+                        placeholder = { Text("Search a city") },
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Button(onClick = { vm.searchCities(query) }, enabled = !state.cityBusy && query.isNotBlank()) {
+                        Icon(Icons.Filled.Search, "Search")
+                    }
+                }
+
+                if (state.cityBusy) {
+                    Spacer(Modifier.height(10.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text(state.cityStatus ?: "Working…", style = MaterialTheme.typography.bodySmall)
+                    }
+                } else state.cityStatus?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
+
+                if (state.citySearch.isNotEmpty()) {
+                    Spacer(Modifier.height(12.dp))
+                    Text("Results", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                    state.citySearch.forEach { hit ->
+                        Row(
+                            Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+                                .clickable(enabled = !state.cityBusy) { vm.downloadCity(hit) }
+                                .padding(vertical = 10.dp, horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(Icons.Filled.Public, null, modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.primary)
+                            Spacer(Modifier.width(10.dp))
+                            Text(hit.name, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                            Text("Download", style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+
+                if (state.cachedCities.isNotEmpty()) {
+                    Spacer(Modifier.height(12.dp))
+                    Text("Downloaded", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                    state.cachedCities.forEach { c ->
+                        Row(
+                            Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+                                .clickable { vm.useCity(c.slug); onDismiss() }
+                                .padding(vertical = 10.dp, horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(c.name, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                            Text("${c.buildingCount}", style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                        }
+                    }
+                }
+            }
+        },
+    )
 }
 
 @Composable
@@ -400,7 +500,8 @@ private fun SettingsDialog(onDismiss: () -> Unit) {
         text = {
             Column {
                 Text(
-                    "Building data is fetched live from OpenStreetMap as you move the map.",
+                    "Berlin is built in. Use the globe button to search and download any other " +
+                        "city's buildings for offline, instant shade.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Spacer(Modifier.height(8.dp))

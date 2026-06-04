@@ -1,5 +1,6 @@
 package app.shadey.map
 
+import android.graphics.RectF
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -26,7 +27,6 @@ import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.FillLayer
 import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.sources.GeoJsonSource
-import org.maplibre.android.style.sources.VectorSource
 
 /** The visible map area reported back to the ViewModel after camera movement. */
 data class ClosedBounds(val south: Double, val west: Double, val north: Double, val east: Double)
@@ -93,36 +93,34 @@ fun ShadeyMap(
                     )
                     map.setStyle(Style.Builder().fromUri("https://tiles.openfreemap.org/styles/liberty")) { style ->
                         MapStyles.installLayers(style)
-                        // The OpenMapTiles vector source(s) backing the basemap. We read building
-                        // footprints straight from the source's "building" layer rather than from
-                        // the rendered 3D extrusions — the source has the geometry at any zoom and
-                        // in any city, even when the 3D layer isn't drawn.
-                        val vectorSourceIds = style.sources
-                            .filterIsInstance<VectorSource>()
+                        // All basemap layers whose ID contains "building" — this includes both the
+                        // 2D fill layer (visible at z14+) and the 3D extrusion layer (z15+). Using
+                        // both means we get building footprints at any zoom the app cares about,
+                        // in any city worldwide. queryRenderedFeatures bounds results to the screen
+                        // rect, so there is no OOM risk regardless of city density.
+                        val buildingLayerIds = style.layers
+                            .filter { it.id.contains("building", ignoreCase = true) }
                             .map { it.id }
+                            .toTypedArray()
                         map.addOnMapClickListener { p ->
                             onMapClick(CoreLatLng(p.latitude, p.longitude))
                             true
                         }
-                        // Pull every building in the loaded tiles for the current viewport. This
-                        // does not depend on the 3D layer being rendered, so it is reliable while
-                        // panning and at lower zooms. Below BUILDING_MIN_ZOOM the building tiles
-                        // don't exist, so we report "below zoom" and let the UI clear shadows.
                         fun queryBuildings() {
                             if (map.cameraPosition.zoom < BUILDING_MIN_ZOOM) {
                                 onBuildingsQueried(emptyList(), true)
                                 return
                             }
-                            val features = ArrayList<Feature>()
-                            for (id in vectorSourceIds) {
-                                style.getSourceAs<VectorSource>(id)?.let {
-                                    features.addAll(it.querySourceFeatures(arrayOf("building"), null))
-                                }
+                            if (buildingLayerIds.isNotEmpty()) {
+                                val rect = RectF(0f, 0f, mapView.width.toFloat(), mapView.height.toFloat())
+                                val features = map.queryRenderedFeatures(rect, *buildingLayerIds)
+                                onBuildingsQueried(features, false)
                             }
-                            onBuildingsQueried(features, false)
                         }
-                        // Report camera position when it stops, and query buildings for the new
-                        // viewport. Tiles may still be loading, so we also re-query on render-finish.
+                        // Fire on both camera-idle (immediate on pan) and render-finish (when tiles
+                        // have loaded after the camera settled). Both are needed: camera-idle fires
+                        // fast but tiles may not be ready; render-finish fires once everything is
+                        // drawn but can lag behind on slow connections.
                         map.addOnCameraIdleListener {
                             val center = map.cameraPosition.target
                             val b = map.projection.visibleRegion.latLngBounds

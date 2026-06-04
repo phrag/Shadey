@@ -1,6 +1,5 @@
 package app.shadey.map
 
-import android.graphics.RectF
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -24,13 +23,16 @@ import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
 import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.CircleLayer
-import org.maplibre.android.style.layers.FillExtrusionLayer
 import org.maplibre.android.style.layers.FillLayer
 import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.sources.GeoJsonSource
+import org.maplibre.android.style.sources.VectorSource
 
 /** The visible map area reported back to the ViewModel after camera movement. */
 data class ClosedBounds(val south: Double, val west: Double, val north: Double, val east: Double)
+
+/** OpenMapTiles only carries the "building" layer at z14+, so shadows need at least this zoom. */
+private const val BUILDING_MIN_ZOOM = 14.0
 
 private class MapHandle(val map: MapLibreMap, val style: Style)
 
@@ -48,7 +50,7 @@ fun ShadeyMap(
     cameraTarget: CoreLatLng?,
     onMapClick: (CoreLatLng) -> Unit,
     onCameraIdle: (center: CoreLatLng, bounds: ClosedBounds) -> Unit,
-    onBuildingsQueried: (features: List<Feature>) -> Unit,
+    onBuildingsQueried: (features: List<Feature>, belowZoom: Boolean) -> Unit,
     onCameraTargetConsumed: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -91,16 +93,36 @@ fun ShadeyMap(
                     )
                     map.setStyle(Style.Builder().fromUri("https://tiles.openfreemap.org/styles/liberty")) { style ->
                         MapStyles.installLayers(style)
-                        // Layer ids in the basemap that render building footprints (with heights).
-                        val buildingLayerIds = style.layers
-                            .filterIsInstance<FillExtrusionLayer>()
+                        // The OpenMapTiles vector source(s) backing the basemap. We read building
+                        // footprints straight from the source's "building" layer rather than from
+                        // the rendered 3D extrusions — the source has the geometry at any zoom and
+                        // in any city, even when the 3D layer isn't drawn.
+                        val vectorSourceIds = style.sources
+                            .filterIsInstance<VectorSource>()
                             .map { it.id }
-                            .toTypedArray()
                         map.addOnMapClickListener { p ->
                             onMapClick(CoreLatLng(p.latitude, p.longitude))
                             true
                         }
-                        // Report camera position as soon as it stops (tiles may still be loading).
+                        // Pull every building in the loaded tiles for the current viewport. This
+                        // does not depend on the 3D layer being rendered, so it is reliable while
+                        // panning and at lower zooms. Below BUILDING_MIN_ZOOM the building tiles
+                        // don't exist, so we report "below zoom" and let the UI clear shadows.
+                        fun queryBuildings() {
+                            if (map.cameraPosition.zoom < BUILDING_MIN_ZOOM) {
+                                onBuildingsQueried(emptyList(), true)
+                                return
+                            }
+                            val features = ArrayList<Feature>()
+                            for (id in vectorSourceIds) {
+                                style.getSourceAs<VectorSource>(id)?.let {
+                                    features.addAll(it.querySourceFeatures(arrayOf("building"), null))
+                                }
+                            }
+                            onBuildingsQueried(features, false)
+                        }
+                        // Report camera position when it stops, and query buildings for the new
+                        // viewport. Tiles may still be loading, so we also re-query on render-finish.
                         map.addOnCameraIdleListener {
                             val center = map.cameraPosition.target
                             val b = map.projection.visibleRegion.latLngBounds
@@ -110,15 +132,7 @@ fun ShadeyMap(
                                     ClosedBounds(b.southWest.latitude, b.southWest.longitude, b.northEast.latitude, b.northEast.longitude),
                                 )
                             }
-                        }
-                        // Query buildings only once tiles are fully rendered — fires on initial
-                        // load and again whenever the map finishes loading after a pan/zoom.
-                        fun queryBuildings() {
-                            if (buildingLayerIds.isNotEmpty()) {
-                                val rect = RectF(0f, 0f, mapView.width.toFloat(), mapView.height.toFloat())
-                                val features = map.queryRenderedFeatures(rect, *buildingLayerIds)
-                                if (features.isNotEmpty()) onBuildingsQueried(features)
-                            }
+                            queryBuildings()
                         }
                         mapView.addOnDidFinishRenderingMapListener(
                             MapView.OnDidFinishRenderingMapListener { fully -> if (fully) queryBuildings() }

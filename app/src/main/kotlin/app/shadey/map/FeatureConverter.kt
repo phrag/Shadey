@@ -18,19 +18,34 @@ fun featuresToBuildings(features: List<Feature>): List<Building> {
     val seen = HashSet<String>(features.size * 2)
     val out = ArrayList<Building>(features.size)
     for (feature in features) {
-        // Deduplicate — same building appears in multiple tiles.
-        val id = feature.id() ?: continue
-        if (!seen.add(id)) continue
         val height = extractHeight(feature)
         when (val geom = feature.geometry()) {
-            is Polygon -> outerRing(geom)?.let { out.add(Building(id, it, height)) }
-            is MultiPolygon -> geom.coordinates()?.forEachIndexed { i, poly ->
-                outerRingCoords(poly?.getOrNull(0))?.let { out.add(Building("$id:$i", it, height)) }
+            is Polygon -> outerRing(geom)?.let { ring ->
+                val id = featureId(feature, ring)
+                if (seen.add(id)) out.add(Building(id, ring, height))
+            }
+            is MultiPolygon -> geom.coordinates()?.forEach { poly ->
+                outerRingCoords(poly?.getOrNull(0))?.let { ring ->
+                    val id = featureId(feature, ring)
+                    if (seen.add(id)) out.add(Building(id, ring, height))
+                }
             }
             else -> Unit
         }
     }
     return out
+}
+
+/**
+ * A stable key for deduplicating a building across tiles. Source-tile features often have no
+ * feature id, so we fall back to osm_id and finally to the rounded first vertex — the same
+ * building footprint hashes to the same key wherever it appears.
+ */
+private fun featureId(feature: Feature, ring: List<LatLng>): String {
+    feature.id()?.let { return it }
+    feature.properties()?.get("osm_id")?.let { if (!it.isJsonNull) return "osm:${it.asString}" }
+    val p = ring[0]
+    return "geo:${Math.round(p.lat * 1e6)}_${Math.round(p.lng * 1e6)}"
 }
 
 private fun extractHeight(feature: Feature): Double {

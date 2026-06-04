@@ -182,11 +182,17 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
      * Building footprints harvested directly from the rendered map tiles (no network).
      * Parsed off the main thread and fed straight into the shadow engine.
      */
-    fun onBuildingsQueried(features: List<org.maplibre.geojson.Feature>) {
+    fun onBuildingsQueried(features: List<org.maplibre.geojson.Feature>, belowZoom: Boolean) {
         // Bundled data is more complete than tile queries — skip when inside the bundled region.
         if (bundledRegion?.contains(center) == true) return
         buildingsJob?.cancel()
         buildingsJob = viewModelScope.launch {
+            if (belowZoom) {
+                activeBuildings = emptyList()
+                _state.update { it.copy(sourceLabel = "Zoom in to see shade") }
+                scheduleRecompute()
+                return@launch
+            }
             val buildings = withContext(Dispatchers.Default) {
                 app.shadey.map.featuresToBuildings(features)
             }

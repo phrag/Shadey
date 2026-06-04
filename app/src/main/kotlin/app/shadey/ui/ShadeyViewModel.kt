@@ -83,7 +83,10 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             curated = loadCurated()
             bundledBuildings = loadBundledBuildings()
-            if (bundledBuildings.isNotEmpty()) {
+            // Only treat bundled data as authoritative if it is the real dataset.
+            // A tiny file (< 1000 buildings) means CI fell back to the sample — in that
+            // case we leave bundledRegion null so tile-based queries are used instead.
+            if (bundledBuildings.size >= MIN_BUNDLED_BUILDINGS) {
                 bundledRegion = BoundingBox.ofBuildings(bundledBuildings)
                 activeBuildings = bundledBuildings
                 _state.update { it.copy(sourceLabel = "Berlin · ${bundledBuildings.size} buildings") }
@@ -277,5 +280,6 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     private companion object {
         const val MAX_SHADOWS = 300
         val EMPTY_RING = emptyList<LatLng>()
+        const val MIN_BUNDLED_BUILDINGS = 1000
     }
 }

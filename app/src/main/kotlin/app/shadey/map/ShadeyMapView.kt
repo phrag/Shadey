@@ -92,7 +92,7 @@ fun ShadeyMap(
                             CameraPosition.Builder()
                                 .target(MlLatLng(initialTarget.lat, initialTarget.lng))
                                 .zoom(15.5)
-                                .tilt(45.0)
+                                .tilt(0.0)
                                 .build(),
                         ),
                     )

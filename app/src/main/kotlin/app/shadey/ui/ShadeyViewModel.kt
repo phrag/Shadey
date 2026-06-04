@@ -68,6 +68,8 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     private var curated: List<Spot> = emptyList()
     private var userSpots: List<Spot> = emptyList()
     private var activeBuildings: List<Building> = emptyList()
+    // Buildings harvested from tiles, accumulated across pans (insertion-ordered for LRU eviction).
+    private val accumulated = LinkedHashMap<String, Building>()
     private var bundledBuildings: List<Building> = emptyList()
     private var bundledRegion: BoundingBox? = null
     private var center: LatLng = initialTarget
@@ -76,8 +78,12 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     private var buildingsJob: Job? = null
 
     // Per-building shadow cache, valid while the sun bucket is unchanged. Keyed by building id.
+    // It persists across pans/zooms so revealing a previously-seen area is instant.
     private val shadowCache = java.util.concurrent.ConcurrentHashMap<String, List<LatLng>>()
     @Volatile private var shadowCacheSunKey: String? = null
+    // The sun bucket the spot ranking was last computed for. Ranking (nextTransition) is the
+    // expensive part, so we only redo it when the sun moves — never on a plain pan.
+    @Volatile private var rankedSunKey: String? = null
 
     init {
         viewModelScope.launch {
@@ -91,12 +97,12 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                 activeBuildings = bundledBuildings
                 _state.update { it.copy(sourceLabel = "Berlin · ${bundledBuildings.size} buildings") }
             }
-            scheduleRecompute(immediate = true)
+            recompute(rank = true, immediate = true)
         }
         viewModelScope.launch {
             store.userSpots.collect {
                 userSpots = it
-                scheduleRecompute()
+                recompute(rank = true)
             }
         }
     }
@@ -108,7 +114,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setTime(minutes: Int) {
         _state.update { it.copy(timeMinutes = minutes.coerceIn(0, 1439), isNow = false) }
-        scheduleRecompute()
+        recompute(rank = true)
     }
 
     fun resetToNow() {
@@ -116,7 +122,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         _state.update {
             it.copy(date = LocalDate.now(), timeMinutes = now.hour * 60 + now.minute, isNow = true)
         }
-        scheduleRecompute()
+        recompute(rank = true)
     }
 
     fun selectSpot(id: String?) = _state.update { it.copy(selectedId = id, dropped = null) }
@@ -137,7 +143,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     fun moveTo(p: LatLng) {
         center = p
         _state.update { it.copy(cameraTarget = p) }
-        scheduleRecompute()
+        recompute()
     }
 
     fun onCameraTargetConsumed() = _state.update { it.copy(cameraTarget = null) }
@@ -172,10 +178,9 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         // Swap back to bundled data when returning from outside the bundled region.
         if (bundledRegion?.contains(newCenter) == true && activeBuildings !== bundledBuildings) {
             activeBuildings = bundledBuildings
-            shadowCache.clear()
             _state.update { it.copy(sourceLabel = "Berlin · ${bundledBuildings.size} buildings") }
         }
-        scheduleRecompute()
+        recompute()
     }
 
     /**
@@ -188,23 +193,29 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         buildingsJob?.cancel()
         buildingsJob = viewModelScope.launch {
             if (belowZoom) {
+                accumulated.clear()
                 activeBuildings = emptyList()
                 _state.update { it.copy(sourceLabel = "Zoom in to see shade") }
-                scheduleRecompute()
+                recompute()
                 return@launch
             }
             val buildings = withContext(Dispatchers.Default) {
                 app.shadey.map.featuresToBuildings(features)
             }
-            // Only replace the active set when we actually got buildings back. An empty result
-            // means tiles aren't rendered yet at this moment (zoom transition, eviction, etc.) —
-            // keeping the previous set avoids shadows blinking out between camera events.
-            if (buildings.isNotEmpty()) {
-                activeBuildings = buildings
-                shadowCache.clear()
-                _state.update { it.copy(sourceLabel = "OpenStreetMap · ${buildings.size} buildings") }
-                scheduleRecompute()
+            // Empty means tiles aren't rendered this instant (zoom transition, eviction) — keep
+            // what we have so shadows don't blink out between camera events.
+            if (buildings.isEmpty()) return@launch
+            // Accumulate across pans so shadows for already-seen blocks stay available without
+            // recomputation. The shadow cache (keyed by building id) is not cleared, so only the
+            // genuinely new buildings get a shadow computed.
+            for (b in buildings) accumulated[b.id] = b
+            while (accumulated.size > MAX_ACCUMULATED) {
+                val oldest = accumulated.keys.iterator().next()
+                accumulated.remove(oldest)
             }
+            activeBuildings = accumulated.values.toList()
+            _state.update { it.copy(sourceLabel = "OpenStreetMap · ${activeBuildings.size} buildings") }
+            recompute()
         }
     }
 
@@ -227,21 +238,28 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         return buildings.filter { box.contains(it.centroid()) }
     }
 
-    private fun scheduleRecompute(immediate: Boolean = false) {
+    /**
+     * Recompute the ground shadows for the current view and, when the sun has moved (or [rank]
+     * is forced), the spot ranking.
+     *
+     * The design keeps panning instant: casting a building's shadow is cached per (building, sun
+     * bucket), so a pan only computes shadows for newly-revealed buildings and reuses the rest.
+     * The ranking — whose `nextTransition` scan is the expensive part — is skipped entirely unless
+     * the sun bucket changed, since a pan at a fixed time can't change any spot's sun/shade state.
+     */
+    private fun recompute(rank: Boolean = false, immediate: Boolean = false) {
         recomputeJob?.cancel()
         recomputeJob = viewModelScope.launch {
-            if (!immediate) delay(120) // debounce time-slider scrubbing
-            val snapshot = _state.value
-            val now = instant(snapshot)
+            if (!immediate) delay(80) // debounce slider scrubbing and back-to-back camera events
+            val now = instant(_state.value)
             val spots = (curated + userSpots).distinctBy { it.id }
-            // Snapshot mutable fields before background thread — sort comparator must be stable.
+            // Snapshot mutable fields before the background thread — the sort comparator below
+            // must see a stable centre, and activeBuildings can be swapped on the main thread.
             val frozenCenter = center
             val frozenBuildings = activeBuildings
-            val (ranked, shadowRings) = withContext(Dispatchers.Default) {
-                val r = ranker.rank(spots, now) { buildingsNear(it.latLng, frozenBuildings, radiusMeters = 150.0) }
+            val result = withContext(Dispatchers.Default) {
                 val sun = SolarCalculator.position(frozenCenter, now)
-                // Sun bucket — shadows are visually identical within ~0.5°, so we cache per
-                // (building, sun bucket). Panning at a fixed time is then near-instant.
+                // Sun bucket — shadows are visually identical within ~0.5°. Cache per bucket.
                 val sunKey = "${(sun.azimuthDeg * 2).toInt()}_${(sun.elevationDeg * 2).toInt()}"
                 if (sunKey != shadowCacheSunKey || shadowCache.size > MAX_CACHE_ENTRIES) {
                     shadowCache.clear()
@@ -254,13 +272,20 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                         shadowCache.getOrPut(b.id) { engine.castShadow(b, sun) ?: EMPTY_RING }
                             .takeIf { it.isNotEmpty() }
                     }
-                r to rings
+                // Rank only when the sun moved, when forced, or on the very first pass.
+                val doRank = rank || rankedSunKey != sunKey || _state.value.ranked.isEmpty()
+                val ranked = if (doRank) {
+                    rankedSunKey = sunKey
+                    ranker.rank(spots, now) { buildingsNear(it.latLng, frozenBuildings, radiusMeters = 150.0) }
+                } else null
+                rings to ranked
             }
+            val (rings, ranked) = result
             _state.update {
                 it.copy(
-                    ranked = ranked,
-                    spotsGeoJson = GeoJsonWriter.spots(ranked),
-                    shadowsGeoJson = GeoJsonWriter.shadows(shadowRings),
+                    shadowsGeoJson = GeoJsonWriter.shadows(rings),
+                    ranked = ranked ?: it.ranked,
+                    spotsGeoJson = if (ranked != null) GeoJsonWriter.spots(ranked) else it.spotsGeoJson,
                 )
             }
         }
@@ -288,9 +313,10 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private companion object {
-        const val MAX_SHADOWS = 150
+        const val MAX_SHADOWS = 400
         val EMPTY_RING = emptyList<LatLng>()
         const val MIN_BUNDLED_BUILDINGS = 1000
-        const val MAX_CACHE_ENTRIES = 1500
+        const val MAX_CACHE_ENTRIES = 6000
+        const val MAX_ACCUMULATED = 8000
     }
 }

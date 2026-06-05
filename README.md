@@ -87,8 +87,12 @@ builds the debug APK and uploads it as a build artifact on every push/PR.
 | Elsewhere, roaming **off** | No | Shows "outside Berlin" |
 | Elsewhere, roaming **on** (opt-in) | Yes, on demand | OpenStreetMap Overpass, cached locally |
 
-The only Android permission requested is `INTERNET`, used solely for the opt-in
-roaming fetch. There is **no location permission** — Shadey never reads your GPS.
+Permissions requested:
+
+| Permission | Why |
+|---|---|
+| `INTERNET` | Downloading city building data and map tiles |
+| `ACCESS_FINE_LOCATION` | Optional — only prompted when you tap the "My Location" button. Never accessed in the background. |
 
 ## Adding spots & cities
 

@@ -411,11 +411,13 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         recomputeJob = viewModelScope.launch {
             if (!immediate) delay(80) // debounce slider scrubbing and back-to-back camera events
             val now = instant(_state.value)
-            val spots = (curated + userSpots).distinctBy { it.id }
             // Snapshot mutable fields before the background thread — the sort comparator below
             // must see a stable centre, and activeBuildings can be swapped on the main thread.
             val frozenCenter = center
             val frozenBuildings = activeBuildings
+            // Hide curated Berlin spots when the user has navigated to a different city.
+            val visibleCurated = if (BERLIN_BBOX.contains(frozenCenter)) curated else emptyList()
+            val spots = (visibleCurated + userSpots).distinctBy { it.id }
             val result = withContext(Dispatchers.Default) {
                 val sun = SolarCalculator.position(frozenCenter, now)
                 // Sun bucket — shadows are visually identical within ~0.5°. Cache per bucket.
@@ -485,7 +487,8 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         val frozenCenter = center
         val frozenBuildings = activeBuildings
         val date = _state.value.date
-        val spots = (curated + userSpots).distinctBy { it.id }
+        val visibleCurated = if (BERLIN_BBOX.contains(frozenCenter)) curated else emptyList()
+        val spots = (visibleCurated + userSpots).distinctBy { it.id }
         frameJob = viewModelScope.launch(Dispatchers.Default) {
             val inView = inViewBuildings(frozenCenter, frozenBuildings)
             val near = spots.associate { it.id to buildingsNear(it.latLng, frozenBuildings, radiusMeters = 150.0) }
@@ -546,5 +549,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         const val MAX_CACHE_ENTRIES = 6000
         const val MAX_ACCUMULATED = 8000
         const val FRAME_STEP_MIN = 10
+        /** Generous bbox covering greater Berlin — curated spots are hidden outside this. */
+        val BERLIN_BBOX = BoundingBox(52.33, 13.09, 52.68, 13.76)
     }
 }

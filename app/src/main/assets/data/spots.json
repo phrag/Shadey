@@ -16,5 +16,13 @@
   { "id": "weinbergspark", "name": "Weinbergspark", "lat": 52.53050, "lng": 13.40150, "category": "PARK", "description": "Sloped lawn in Mitte that catches the afternoon sun.", "source": "CURATED" },
   { "id": "arkonaplatz", "name": "Arkonaplatz", "lat": 52.53900, "lng": 13.40150, "category": "SQUARE", "description": "Relaxed square with a flea market and cafe terraces.", "source": "CURATED" },
   { "id": "koernerpark", "name": "Koernerpark", "lat": 52.47500, "lng": 13.43800, "category": "PARK", "description": "Sunken neo-baroque garden with an orangery cafe in Neukoelln.", "source": "CURATED" },
-  { "id": "oberbaumbruecke", "name": "Oberbaumbruecke", "lat": 52.50180, "lng": 13.44560, "category": "VIEWPOINT", "description": "Landmark brick bridge over the Spree between Kreuzberg and Friedrichshain.", "source": "CURATED" }
+  { "id": "oberbaumbruecke", "name": "Oberbaumbruecke", "lat": 52.50180, "lng": 13.44560, "category": "VIEWPOINT", "description": "Landmark brick bridge over the Spree between Kreuzberg and Friedrichshain.", "source": "CURATED" },
+  { "id": "prater-garten", "name": "Prater Garten", "lat": 52.54030, "lng": 13.40940, "category": "BAR", "description": "Berlin's oldest beer garden (1837), shaded by chestnut trees on Kastanienallee.", "source": "CURATED" },
+  { "id": "brlo-brwhouse", "name": "BRLO Brwhouse", "lat": 52.50005, "lng": 13.37364, "category": "BAR", "description": "Craft beer garden at Gleisdreieck park; open and sunny with park views.", "source": "CURATED" },
+  { "id": "schleusenkrug", "name": "Schleusenkrug", "lat": 52.51192, "lng": 13.33686, "category": "BAR", "description": "Classic beer garden by the Tiergarten canal lock, open since 1954.", "source": "CURATED" },
+  { "id": "freischwimmer", "name": "Freischwimmer", "lat": 52.49180, "lng": 13.44810, "category": "WATERSIDE", "description": "Floating canal cafe in Kreuzberg with sunny deck seating over the water.", "source": "CURATED" },
+  { "id": "badeschiff", "name": "Badeschiff", "lat": 52.49421, "lng": 13.46063, "category": "WATERSIDE", "description": "Floating pool and bar on the Spree in Treptow; south-facing sun trap.", "source": "CURATED" },
+  { "id": "kollwitzplatz", "name": "Kollwitzplatz", "lat": 52.53880, "lng": 13.41990, "category": "SQUARE", "description": "Prenzlauer Berg's café terrace hub; west-facing terraces catch afternoon sun.", "source": "CURATED" },
+  { "id": "golgatha", "name": "Golgatha", "lat": 52.48752, "lng": 13.38010, "category": "BAR", "description": "Bar and cafe terrace halfway up Viktoriapark hill; great views, full afternoon sun.", "source": "CURATED" },
+  { "id": "holzmarkt", "name": "Holzmarkt", "lat": 52.50910, "lng": 13.42630, "category": "WATERSIDE", "description": "Eclectic Spree riverside village with outdoor bars and south-facing sun all day.", "source": "CURATED" }
 ]

@@ -62,6 +62,8 @@ data class ShadeyUiState(
     val cityStatus: String? = null,
     /** True when there's no usable building data yet, so the UI should prompt for a city. */
     val promptCity: Boolean = false,
+    val userLocation: LatLng? = null,
+    val nearMeActive: Boolean = false,
 ) {
     val selected: SpotSunInfo? get() = ranked.firstOrNull { it.spot.id == selectedId }
 }
@@ -195,6 +197,14 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                 )
             }
         }
+    }
+
+    fun setUserLocation(loc: LatLng) {
+        _state.update { it.copy(userLocation = loc) }
+    }
+
+    fun setNearMeActive(active: Boolean) {
+        _state.update { it.copy(nearMeActive = active) }
     }
 
     fun goToPlace(hit: app.shadey.data.CityHit) = moveTo(LatLng(hit.lat, hit.lng))

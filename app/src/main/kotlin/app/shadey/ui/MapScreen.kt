@@ -30,6 +30,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.NearMe
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
@@ -41,6 +42,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -124,17 +126,26 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
         }
     }
 
-    fun getAndMoveToLocation() {
+    fun getAndMoveToLocation(activateNearMe: Boolean = false) {
         val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
         @Suppress("MissingPermission")
         val loc = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
             ?: lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-        if (loc != null) vm.moveTo(app.shadey.core.model.LatLng(loc.latitude, loc.longitude))
+        if (loc != null) {
+            val ll = app.shadey.core.model.LatLng(loc.latitude, loc.longitude)
+            vm.setUserLocation(ll)
+            vm.moveTo(ll)
+            if (activateNearMe) vm.setNearMeActive(true)
+        }
     }
 
     val locationPermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { granted -> if (granted) getAndMoveToLocation() }
+    ) { granted -> if (granted) getAndMoveToLocation(activateNearMe = false) }
+
+    val nearMePermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted -> if (granted) getAndMoveToLocation(activateNearMe = true) }
 
     BottomSheetScaffold(
         scaffoldState = sheetState,
@@ -209,19 +220,59 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.SemiBold,
                         )
+                        Spacer(Modifier.width(8.dp))
+                        FilterChip(
+                            selected = state.nearMeActive,
+                            onClick = {
+                                if (state.nearMeActive) {
+                                    vm.setNearMeActive(false)
+                                } else if (state.userLocation != null) {
+                                    vm.setNearMeActive(true)
+                                } else if (ContextCompat.checkSelfPermission(
+                                        context, Manifest.permission.ACCESS_FINE_LOCATION
+                                    ) == PackageManager.PERMISSION_GRANTED
+                                ) {
+                                    getAndMoveToLocation(activateNearMe = true)
+                                } else {
+                                    nearMePermLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+                                }
+                            },
+                            label = { Text("Near me") },
+                            leadingIcon = {
+                                Icon(Icons.Filled.NearMe, null, Modifier.size(14.dp))
+                            },
+                        )
                         Spacer(Modifier.weight(1f))
-                        TextButton(onClick = { vm.dropPinAtCenter(); }) {
+                        TextButton(onClick = { vm.dropPinAtCenter() }) {
                             Icon(Icons.Filled.Add, null, Modifier.size(18.dp))
                             Spacer(Modifier.width(4.dp))
                             Text("Add spot here")
                         }
                     }
                     Spacer(Modifier.height(2.dp))
+                    val displayedSpots = if (state.nearMeActive && state.userLocation != null) {
+                        state.ranked.filter {
+                            approxDistanceMeters(it.spot.latLng, state.userLocation!!) < 1500.0
+                        }
+                    } else {
+                        state.ranked
+                    }
+                    if (state.nearMeActive && displayedSpots.isEmpty()) {
+                        Text(
+                            "No saved spots within 1.5 km",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                            modifier = Modifier.padding(vertical = 12.dp),
+                        )
+                    }
                     LazyColumn(Modifier.fillMaxWidth().heightIn(max = 320.dp)) {
-                        items(state.ranked, key = { it.spot.id }) { info ->
+                        items(displayedSpots, key = { it.spot.id }) { info ->
+                            val dist = if (state.nearMeActive && state.userLocation != null)
+                                approxDistanceMeters(info.spot.latLng, state.userLocation!!) else null
                             SpotRow(
                                 info, zone,
                                 selected = info.spot.id == state.selectedId,
+                                distanceMeters = dist,
                                 onClick = {
                                     vm.selectSpot(info.spot.id)
                                     vm.moveTo(app.shadey.core.model.LatLng(info.spot.lat, info.spot.lng))
@@ -557,7 +608,13 @@ private fun ShadeyMapLayer(state: ShadeyUiState, vm: ShadeyViewModel) {
 }
 
 @Composable
-private fun SpotRow(info: SpotSunInfo, zone: ZoneId, selected: Boolean, onClick: () -> Unit) {
+private fun SpotRow(
+    info: SpotSunInfo,
+    zone: ZoneId,
+    selected: Boolean,
+    distanceMeters: Double? = null,
+    onClick: () -> Unit,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -577,6 +634,13 @@ private fun SpotRow(info: SpotSunInfo, zone: ZoneId, selected: Boolean, onClick:
                 statusLine(info, zone),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+            )
+        }
+        if (distanceMeters != null) {
+            Text(
+                formatDistance(distanceMeters),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
             )
         }
     }
@@ -697,3 +761,15 @@ private fun statusLine(info: SpotSunInfo, zone: ZoneId): String = when (info.sun
 
 private fun sunDetail(info: SpotSunInfo): String =
     "Sun ${info.solar.elevationDeg.roundToInt()}° elevation · ${info.solar.azimuthDeg.roundToInt()}° azimuth"
+
+private fun approxDistanceMeters(a: app.shadey.core.model.LatLng, b: app.shadey.core.model.LatLng): Double {
+    val dLat = Math.toRadians(b.lat - a.lat)
+    val dLng = Math.toRadians(b.lng - a.lng)
+    val cosLat = Math.cos(Math.toRadians((a.lat + b.lat) / 2))
+    return Math.sqrt(dLat * dLat + (dLng * cosLat) * (dLng * cosLat)) * 6_371_000
+}
+
+private fun formatDistance(meters: Double): String = when {
+    meters < 1000 -> "${meters.roundToInt()} m"
+    else -> "${"%.1f".format(meters / 1000)} km"
+}

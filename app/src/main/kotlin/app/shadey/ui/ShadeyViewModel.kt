@@ -197,6 +197,10 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun goToPlace(hit: app.shadey.data.CityHit) = moveTo(LatLng(hit.lat, hit.lng))
+
+    fun dropPinAtCenter() = onMapClick(center)
+
     fun moveTo(p: LatLng) {
         center = p
         _state.update { it.copy(cameraTarget = p) }

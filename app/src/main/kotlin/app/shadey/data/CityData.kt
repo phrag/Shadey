@@ -105,7 +105,15 @@ object BuildingDownloader {
         return doubleArrayOf(south, west, north, east)
     }
 
-    /** Fetch buildings for [bbox] and return a GeoJSON FeatureCollection string. */
+    /**
+     * Fetch buildings for [bbox] and return a GeoJSON FeatureCollection string.
+     *
+     * The Overpass response for a large city can be 50–70 MB of JSON. Loading it into a
+     * String would OOM on devices with a 256 MB heap limit. Instead we:
+     *   1. Stream the HTTP response body to a temp file (8 KB chunks, no large in-memory copy).
+     *   2. Stream-parse the temp file with JsonReader so we never hold the whole blob in RAM.
+     *   3. Delete the temp file immediately after parsing.
+     */
     suspend fun downloadGeoJson(bbox: DoubleArray): String = withContext(Dispatchers.IO) {
         val (s, w, n, e) = bbox
         val query = """
@@ -116,46 +124,63 @@ object BuildingDownloader {
             );
             out body geom;
         """.trimIndent()
-        var lastErr: Exception? = null
-        for (url in ENDPOINTS) {
-            repeat(2) { attempt ->
-                try {
-                    val body = httpPost(url, "data=" + URLEncoder.encode(query, "UTF-8"))
-                    if (body != null) return@withContext overpassToGeoJson(body)
-                } catch (ex: Exception) {
-                    lastErr = ex
+        val postData = "data=" + URLEncoder.encode(query, "UTF-8")
+        val tmpFile = File.createTempFile("overpass", ".json")
+        try {
+            var lastErr: Exception? = null
+            for (url in ENDPOINTS) {
+                repeat(2) { attempt ->
+                    try {
+                        if (httpPostToFile(url, postData, tmpFile)) {
+                            return@withContext overpassFileToGeoJson(tmpFile)
+                        }
+                    } catch (ex: Exception) {
+                        lastErr = ex
+                    }
+                    Thread.sleep(1500L * (attempt + 1))
                 }
-                Thread.sleep(1500L * (attempt + 1))
             }
+            throw IOException("Could not reach OpenStreetMap: ${lastErr?.message ?: "unknown error"}")
+        } finally {
+            tmpFile.delete()
         }
-        throw IOException("Could not reach OpenStreetMap: ${lastErr?.message ?: "unknown error"}")
     }
 
-    private fun overpassToGeoJson(jsonText: String): String {
-        val root = JSONObject(jsonText)
-        val elements = root.optJSONArray("elements") ?: JSONArray()
+    /** POST [postBody] to [url], streaming the response body into [dest]. Returns false on non-2xx. */
+    private fun httpPostToFile(url: String, postBody: String, dest: File): Boolean {
+        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 30_000
+            readTimeout = 120_000
+            setRequestProperty("User-Agent", USER_AGENT)
+            requestMethod = "POST"
+            doOutput = true
+            setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+        }
+        return try {
+            conn.outputStream.use { it.write(postBody.toByteArray()) }
+            if (conn.responseCode !in 200..299) false
+            else { conn.inputStream.use { inp -> dest.outputStream().use { inp.copyTo(it) } }; true }
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /**
+     * Stream-parse an Overpass JSON file using [android.util.JsonReader].
+     * Reads one element at a time so peak memory is proportional to a single building, not
+     * the full response.
+     */
+    private fun overpassFileToGeoJson(file: File): String {
         val features = JSONArray()
-        for (i in 0 until elements.length()) {
-            val el = elements.optJSONObject(i) ?: continue
-            val tags = el.optJSONObject("tags") ?: JSONObject()
-            val props = JSONObject()
-                .put("height", parseHeight(tags))
-                .put("osm_id", "${el.optString("type")}/${el.optString("id")}")
-            when (el.optString("type")) {
-                "way" -> ringOf(el.optJSONArray("geometry"))?.let { ring ->
-                    features.put(feature(props, polygon(ring)))
-                }
-                "relation" -> {
-                    val members = el.optJSONArray("members") ?: continue
-                    val polys = JSONArray()
-                    for (m in 0 until members.length()) {
-                        val mem = members.optJSONObject(m) ?: continue
-                        if (mem.optString("role") != "outer") continue
-                        ringOf(mem.optJSONArray("geometry"))?.let { polys.put(JSONArray().put(it)) }
-                    }
-                    if (polys.length() > 0) {
-                        features.put(feature(props, JSONObject().put("type", "MultiPolygon").put("coordinates", polys)))
-                    }
+        android.util.JsonReader(java.io.InputStreamReader(file.inputStream(), "UTF-8")).use { r ->
+            r.beginObject()
+            while (r.hasNext()) {
+                if (r.nextName() == "elements") {
+                    r.beginArray()
+                    while (r.hasNext()) parseElement(r)?.let { features.put(it) }
+                    r.endArray()
+                } else {
+                    r.skipValue()
                 }
             }
         }
@@ -166,36 +191,102 @@ object BuildingDownloader {
             .toString()
     }
 
+    private fun parseElement(r: android.util.JsonReader): JSONObject? {
+        var type = ""; var id = ""; var height = DEFAULT_HEIGHT_M
+        var wayRing: JSONArray? = null
+        val outerRings = JSONArray()
+        r.beginObject()
+        while (r.hasNext()) {
+            when (r.nextName()) {
+                "type" -> type = r.nextString()
+                "id"   -> id = r.nextLong().toString()
+                "tags" -> height = readHeight(r)
+                "geometry" -> wayRing = readRing(r)
+                "members"  -> readOuters(r, outerRings)
+                else -> r.skipValue()
+            }
+        }
+        r.endObject()
+        val props = JSONObject().put("height", height).put("osm_id", "$type/$id")
+        return when (type) {
+            "way" -> wayRing?.let { feature(props, polygon(it)) }
+            "relation" -> if (outerRings.length() > 0) {
+                val polys = JSONArray()
+                for (i in 0 until outerRings.length()) polys.put(JSONArray().put(outerRings.getJSONArray(i)))
+                feature(props, JSONObject().put("type", "MultiPolygon").put("coordinates", polys))
+            } else null
+            else -> null
+        }
+    }
+
+    private fun readRing(r: android.util.JsonReader): JSONArray? {
+        val ring = JSONArray()
+        r.beginArray()
+        while (r.hasNext()) {
+            var lat = Double.NaN; var lon = Double.NaN
+            r.beginObject()
+            while (r.hasNext()) {
+                when (r.nextName()) {
+                    "lat" -> lat = r.nextDouble()
+                    "lon" -> lon = r.nextDouble()
+                    else  -> r.skipValue()
+                }
+            }
+            r.endObject()
+            if (!lat.isNaN() && !lon.isNaN()) ring.put(JSONArray().put(lon).put(lat))
+        }
+        r.endArray()
+        return if (ring.length() >= 4) ring else null
+    }
+
+    private fun readOuters(r: android.util.JsonReader, out: JSONArray) {
+        r.beginArray()
+        while (r.hasNext()) {
+            var role = ""; var ring: JSONArray? = null
+            r.beginObject()
+            while (r.hasNext()) {
+                when (r.nextName()) {
+                    "role"     -> role = r.nextString()
+                    "geometry" -> ring = readRing(r)
+                    else       -> r.skipValue()
+                }
+            }
+            r.endObject()
+            if (role == "outer") ring?.let { out.put(it) }
+        }
+        r.endArray()
+    }
+
+    private fun readHeight(r: android.util.JsonReader): Double {
+        var explicit = Double.NaN; var fromLevels = Double.NaN
+        r.beginObject()
+        while (r.hasNext()) {
+            when (r.nextName()) {
+                "height", "building:height" -> {
+                    val v = r.nextString().filter { it.isDigit() || it == '.' }.toDoubleOrNull()
+                    if (v != null && v > 0) explicit = v
+                }
+                "building:levels" -> {
+                    val v = r.nextString().substringBefore(";").toDoubleOrNull()
+                    if (v != null && v > 0) fromLevels = v * METERS_PER_LEVEL
+                }
+                else -> r.skipValue()
+            }
+        }
+        r.endObject()
+        return when {
+            !explicit.isNaN()    -> explicit
+            !fromLevels.isNaN()  -> fromLevels
+            else                 -> DEFAULT_HEIGHT_M
+        }
+    }
+
     private fun feature(props: JSONObject, geometry: JSONObject): JSONObject =
         JSONObject().put("type", "Feature").put("properties", props).put("geometry", geometry)
 
     private fun polygon(ring: JSONArray): JSONObject =
         JSONObject().put("type", "Polygon").put("coordinates", JSONArray().put(ring))
 
-    /** Convert an Overpass geometry array ([{lat,lon},...]) into a GeoJSON ring ([[lng,lat],...]). */
-    private fun ringOf(geometry: JSONArray?): JSONArray? {
-        if (geometry == null || geometry.length() < 4) return null
-        val ring = JSONArray()
-        for (i in 0 until geometry.length()) {
-            val p = geometry.optJSONObject(i) ?: continue
-            if (!p.has("lat") || !p.has("lon")) continue
-            ring.put(JSONArray().put(p.getDouble("lon")).put(p.getDouble("lat")))
-        }
-        return if (ring.length() >= 4) ring else null
-    }
-
-    private fun parseHeight(tags: JSONObject): Double {
-        for (key in listOf("height", "building:height")) {
-            val v = tags.optString(key)
-            if (v.isNotBlank()) {
-                val num = v.filter { it.isDigit() || it == '.' }.toDoubleOrNull()
-                if (num != null && num > 0) return num
-            }
-        }
-        val levels = tags.optString("building:levels").substringBefore(";").toDoubleOrNull()
-        if (levels != null && levels > 0) return levels * METERS_PER_LEVEL
-        return DEFAULT_HEIGHT_M
-    }
 }
 
 /** Persists downloaded city building data in the app's private files dir. */
@@ -249,10 +340,9 @@ class CityStore(private val filesDir: File) {
     }
 }
 
-private fun httpGet(url: String): String? = request(url, null)
-private fun httpPost(url: String, body: String): String? = request(url, body)
+private fun httpGet(url: String): String? = request(url)
 
-private fun request(url: String, postBody: String?): String? {
+private fun request(url: String, postBody: String? = null): String? {
     val conn = (URL(url).openConnection() as HttpURLConnection).apply {
         connectTimeout = 30_000
         readTimeout = 120_000

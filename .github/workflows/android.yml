@@ -1,0 +1,65 @@
+name: Android CI
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', 'gradle/libs.versions.toml', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      - name: Fetch Berlin building data
+        run: |
+          pip install requests
+          python3 data-pipeline/fetch_osm.py \
+            --bbox 52.480 13.370 52.550 13.490 \
+            --out app/src/main/assets/data/berlin_buildings.geojson \
+          || { echo "Overpass unavailable — using bundled sample data"; \
+               cp app/src/main/assets/data/sample_buildings.geojson \
+                  app/src/main/assets/data/berlin_buildings.geojson; }
+
+      - name: Run core engine unit tests
+        run: ./gradlew :core:test --stacktrace
+
+      - name: Build debug APK
+        run: ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadey-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error

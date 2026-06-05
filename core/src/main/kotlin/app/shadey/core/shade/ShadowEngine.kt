@@ -81,6 +81,15 @@ class ShadowEngine(
         return Polygons.convexHull(pts).map(proj::toLatLng)
     }
 
+    /**
+     * Shadow polygon using a projection anchored at the building's own footprint, making the
+     * result independent of the map centre. This lets callers cache the output per building.
+     */
+    fun castShadow(building: Building, sun: SolarPosition): List<LatLng>? {
+        val anchor = building.footprint.firstOrNull() ?: return null
+        return castShadow(building, sun, LocalProjection(anchor))
+    }
+
     data class Transition(val at: Instant, val to: Sunlight)
 
     /**
@@ -91,22 +100,68 @@ class ShadowEngine(
         point: LatLng,
         buildings: List<Building>,
         from: Instant,
-        within: Duration = Duration.ofHours(8),
-        step: Duration = Duration.ofMinutes(5),
+        within: Duration = Duration.ofHours(3),
+        step: Duration = Duration.ofMinutes(10),
     ): Transition? {
-        val startState = sunlightAt(point, from, buildings)
+        // Pre-project footprints once — the projection origin (point) is fixed for the whole scan.
+        val proj = LocalProjection(point)
+        val rings = buildings.mapNotNull { b ->
+            if (b.heightMeters <= observerHeightMeters) null
+            else proj.toLocal(b.footprint).takeIf { it.size >= 3 }?.let { b to it }
+        }
+        val startState = isBlockedRings(point, SolarCalculator.position(point, from), rings)
+            .let { if (SolarCalculator.position(point, from).elevationDeg <= 0.0) Sunlight.NIGHT
+                   else if (it) Sunlight.SHADE else Sunlight.SUN }
         val end = from.plus(within)
         val stepSecs = step.seconds
         var t = from
         while (t.isBefore(end)) {
             val next = t.plusSeconds(stepSecs)
-            val state = sunlightAt(point, next, buildings)
+            val sun = SolarCalculator.position(point, next)
+            val state = when {
+                sun.elevationDeg <= 0.0 -> Sunlight.NIGHT
+                isBlockedRings(point, sun, rings) -> Sunlight.SHADE
+                else -> Sunlight.SUN
+            }
             if (state != startState) {
-                return Transition(refine(point, buildings, t, next, startState), state)
+                return Transition(refineRings(point, rings, t, next, startState), state)
             }
             t = next
         }
         return null
+    }
+
+    // Blocked check using pre-projected rings — avoids re-projecting footprints on every call.
+    private fun isBlockedRings(point: LatLng, sun: SolarPosition, rings: List<Pair<Building, List<Vec2>>>): Boolean {
+        if (sun.elevationDeg <= 0.0) return true
+        val azRad = Math.toRadians(sun.azimuthDeg)
+        val toSun = Vec2(sin(azRad), cos(azRad))
+        val tanEl = tan(Math.toRadians(sun.elevationDeg))
+        val origin = Vec2(0.0, 0.0)
+        for ((b, ring) in rings) {
+            if (nearestVertexDistance(ring) > maxShadowReachMeters) continue
+            val tIn = Polygons.firstRayHit(ring, origin, toSun) ?: continue
+            if (tIn > maxShadowReachMeters) continue
+            if (observerHeightMeters + tIn * tanEl < b.heightMeters) return true
+        }
+        return false
+    }
+
+    private fun refineRings(point: LatLng, rings: List<Pair<Building, List<Vec2>>>, lo: Instant, hi: Instant, startState: Sunlight): Instant {
+        var a = lo
+        var b = hi
+        repeat(7) {
+            val mid = a.plusSeconds((b.epochSecond - a.epochSecond) / 2)
+            if (mid == a || mid == b) return b
+            val sun = SolarCalculator.position(point, mid)
+            val state = when {
+                sun.elevationDeg <= 0.0 -> Sunlight.NIGHT
+                isBlockedRings(point, sun, rings) -> Sunlight.SHADE
+                else -> Sunlight.SUN
+            }
+            if (state == startState) a = mid else b = mid
+        }
+        return b
     }
 
     private fun refine(point: LatLng, buildings: List<Building>, lo: Instant, hi: Instant, startState: Sunlight): Instant {

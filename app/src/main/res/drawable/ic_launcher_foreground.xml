@@ -1,0 +1,29 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Sun disc -->
+    <path
+        android:fillColor="#FFF5A623"
+        android:pathData="M54,36 a18,18 0 1,0 0.1,0 z" />
+
+    <!-- Eight rays, drawn as four rotated bar-pairs -->
+    <group android:pivotX="54" android:pivotY="54" android:rotation="0">
+        <path android:fillColor="#FFF5A623" android:pathData="M51,12 h6 v12 h-6 z" />
+        <path android:fillColor="#FFF5A623" android:pathData="M51,84 h6 v12 h-6 z" />
+    </group>
+    <group android:pivotX="54" android:pivotY="54" android:rotation="45">
+        <path android:fillColor="#FFF5A623" android:pathData="M51,12 h6 v12 h-6 z" />
+        <path android:fillColor="#FFF5A623" android:pathData="M51,84 h6 v12 h-6 z" />
+    </group>
+    <group android:pivotX="54" android:pivotY="54" android:rotation="90">
+        <path android:fillColor="#FFF5A623" android:pathData="M51,12 h6 v12 h-6 z" />
+        <path android:fillColor="#FFF5A623" android:pathData="M51,84 h6 v12 h-6 z" />
+    </group>
+    <group android:pivotX="54" android:pivotY="54" android:rotation="135">
+        <path android:fillColor="#FFF5A623" android:pathData="M51,12 h6 v12 h-6 z" />
+        <path android:fillColor="#FFF5A623" android:pathData="M51,84 h6 v12 h-6 z" />
+    </group>
+</vector>

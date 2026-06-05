@@ -201,6 +201,17 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
 
     fun dropPinAtCenter() = onMapClick(center)
 
+    /**
+     * Returns the current map viewport expanded by 50% on each side as a viewbox
+     * [west, south, east, north] suitable for biasing Nominatim search results.
+     */
+    fun mapViewbox(): DoubleArray? {
+        val b = bounds ?: return null
+        val dLat = (b.north - b.south) * 0.5
+        val dLng = (b.east - b.west) * 0.5
+        return doubleArrayOf(b.west - dLng, b.south - dLat, b.east + dLng, b.north + dLat)
+    }
+
     fun moveTo(p: LatLng) {
         center = p
         _state.update { it.copy(cameraTarget = p) }

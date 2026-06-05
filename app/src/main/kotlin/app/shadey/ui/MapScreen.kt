@@ -111,12 +111,13 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
         }
     }
 
-    // Debounced search-as-you-type
+    // Debounced search-as-you-type, biased toward the current map viewport
     LaunchedEffect(searchQuery) {
         if (searchQuery.length >= 2) {
             delay(400)
             searchBusy = true
-            searchResults = runCatching { Geocoder.search(searchQuery) }.getOrDefault(emptyList())
+            val viewbox = vm.mapViewbox()
+            searchResults = runCatching { Geocoder.search(searchQuery, viewbox) }.getOrDefault(emptyList())
             searchBusy = false
         } else {
             searchResults = emptyList()
@@ -326,7 +327,10 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
                         shape = RoundedCornerShape(16.dp),
                     ) {
                         Column {
-                            searchResults.take(6).forEach { hit ->
+                            searchResults.take(6).forEachIndexed { idx, hit ->
+                                val parts = hit.name.split(", ")
+                                val title = parts.first()
+                                val subtitle = parts.drop(1).joinToString(", ")
                                 Row(
                                     Modifier.fillMaxWidth()
                                         .clickable {
@@ -335,17 +339,27 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
                                             searchQuery = ""
                                             searchResults = emptyList()
                                         }
-                                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                                        .padding(horizontal = 16.dp, vertical = 11.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
                                     Icon(
                                         Icons.Filled.Search,
                                         null,
                                         Modifier.size(16.dp),
-                                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
+                                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
                                     )
                                     Spacer(Modifier.width(12.dp))
-                                    Text(hit.name, style = MaterialTheme.typography.bodyMedium)
+                                    Column(Modifier.weight(1f)) {
+                                        Text(title, style = MaterialTheme.typography.bodyMedium)
+                                        if (subtitle.isNotEmpty()) {
+                                            Text(
+                                                subtitle,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
+                                                maxLines = 1,
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }

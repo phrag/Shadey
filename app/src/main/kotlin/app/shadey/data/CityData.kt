@@ -40,11 +40,21 @@ private const val USER_AGENT = "Shadey/1.0 (+https://github.com/phrag/shadey)"
 
 /** City search via OpenStreetMap Nominatim. */
 object Geocoder {
-    suspend fun search(query: String): List<CityHit> = withContext(Dispatchers.IO) {
+    /**
+     * Search for places matching [query]. When [viewbox] is supplied (west, south, east, north),
+     * Nominatim biases results toward that area without excluding global matches (`bounded=0`).
+     * This makes "Ostbahnhof" return the Berlin station first when the map shows Berlin.
+     */
+    suspend fun search(query: String, viewbox: DoubleArray? = null): List<CityHit> = withContext(Dispatchers.IO) {
         if (query.isBlank()) return@withContext emptyList()
-        val url = "https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&q=" +
-            URLEncoder.encode(query.trim(), "UTF-8")
-        val body = httpGet(url) ?: return@withContext emptyList()
+        val sb = StringBuilder("https://nominatim.openstreetmap.org/search?format=jsonv2&limit=8&q=")
+        sb.append(URLEncoder.encode(query.trim(), "UTF-8"))
+        if (viewbox != null && viewbox.size == 4) {
+            // Nominatim viewbox order: left (west), top (north), right (east), bottom (south).
+            val (w, s, e, n) = viewbox
+            sb.append("&viewbox=$w,$n,$e,$s&bounded=0")
+        }
+        val body = httpGet(sb.toString()) ?: return@withContext emptyList()
         val arr = runCatching { JSONArray(body) }.getOrNull() ?: return@withContext emptyList()
         (0 until arr.length()).mapNotNull { i ->
             val o = arr.optJSONObject(i) ?: return@mapNotNull null
@@ -60,9 +70,14 @@ object Geocoder {
         }
     }
 
+    /**
+     * Returns a concise display name from Nominatim's long comma-separated display_name.
+     * Keeps up to 3 parts (e.g. "Engelbecken, Luisenstadt, Berlin") so the user can tell
+     * apart similarly named places in different cities.
+     */
     private fun shortName(displayName: String, fallback: String): String {
         if (displayName.isBlank()) return fallback
-        return displayName.split(",").map { it.trim() }.filter { it.isNotEmpty() }.take(2).joinToString(", ")
+        return displayName.split(",").map { it.trim() }.filter { it.isNotEmpty() }.take(3).joinToString(", ")
     }
 }
 

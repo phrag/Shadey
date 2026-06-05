@@ -1,5 +1,9 @@
 # ☀️ Shadey
 
+<p align="center">
+  <img src="docs/screenshot.png" width="320" alt="Shadey showing ground shadows across a Berlin city block at 19:56">
+</p>
+
 **Find the sun.** Shadey shows whether a spot — a café terrace, a park bench, a
 canal bank — is in **sunlight or shade** right now (or at any time of day),
 computed from real **building shadows**. It's an English, Berlin-first,
@@ -87,8 +91,12 @@ builds the debug APK and uploads it as a build artifact on every push/PR.
 | Elsewhere, roaming **off** | No | Shows "outside Berlin" |
 | Elsewhere, roaming **on** (opt-in) | Yes, on demand | OpenStreetMap Overpass, cached locally |
 
-The only Android permission requested is `INTERNET`, used solely for the opt-in
-roaming fetch. There is **no location permission** — Shadey never reads your GPS.
+Permissions requested:
+
+| Permission | Why |
+|---|---|
+| `INTERNET` | Downloading city building data and map tiles |
+| `ACCESS_FINE_LOCATION` | Optional — only prompted when you tap the "My Location" button. Never accessed in the background. |
 
 ## Adding spots & cities
 

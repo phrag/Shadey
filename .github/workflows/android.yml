@@ -3,7 +3,9 @@ name: Android CI
 on:
   push:
     branches: [main, "claude/**"]
-    tags: ["v*"]
+    tags: ["v*", "*.*.*"]
+  release:
+    types: [published]
   pull_request:
   workflow_dispatch:
 
@@ -66,14 +68,14 @@ jobs:
           if-no-files-found: error
 
       - name: Rename APK for release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           cp app/build/outputs/apk/debug/app-debug.apk shadey-${VERSION}.apk
 
-      - name: Publish GitHub release
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Attach APK to release
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          name: "Shadey ${{ github.ref_name }}"
+          tag_name: ${{ github.ref_name }}
           files: shadey-*.apk

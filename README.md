@@ -1,5 +1,9 @@
 # ☀️ Shadey
 
+<p align="center">
+  <img src="docs/screenshot.png" width="320" alt="Shadey showing ground shadows across a Berlin city block at 19:56">
+</p>
+
 **Find the sun.** Shadey shows whether a spot — a café terrace, a park bench, a
 canal bank — is in **sunlight or shade** right now (or at any time of day),
 computed from real **building shadows**. It's an English, Berlin-first,

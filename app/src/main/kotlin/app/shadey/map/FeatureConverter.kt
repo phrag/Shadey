@@ -15,37 +15,45 @@ private const val METERS_PER_LEVEL = 3.2
  * bypassing the JSON serialise→parse roundtrip that was causing lag.
  */
 fun featuresToBuildings(features: List<Feature>): List<Building> {
-    val seen = HashSet<String>(features.size * 2)
-    val out = ArrayList<Building>(features.size)
+    // A building can appear in both the 2D fill layer (often without a height) and the 3D
+    // extrusion layer (with render_height). Key by footprint and keep the tallest version so
+    // the real height wins, while distinct buildings are never collapsed together.
+    val byKey = LinkedHashMap<String, Building>(features.size * 2)
+    fun add(id: String, ring: List<LatLng>, height: Double) {
+        val existing = byKey[id]
+        if (existing == null || height > existing.heightMeters) {
+            byKey[id] = Building(id, ring, height)
+        }
+    }
     for (feature in features) {
         val height = extractHeight(feature)
         when (val geom = feature.geometry()) {
-            is Polygon -> outerRing(geom)?.let { ring ->
-                val id = featureId(feature, ring)
-                if (seen.add(id)) out.add(Building(id, ring, height))
-            }
+            is Polygon -> outerRing(geom)?.let { ring -> add(featureId(feature, ring), ring, height) }
             is MultiPolygon -> geom.coordinates()?.forEach { poly ->
-                outerRingCoords(poly?.getOrNull(0))?.let { ring ->
-                    val id = featureId(feature, ring)
-                    if (seen.add(id)) out.add(Building(id, ring, height))
-                }
+                outerRingCoords(poly?.getOrNull(0))?.let { ring -> add(featureId(feature, ring), ring, height) }
             }
             else -> Unit
         }
     }
-    return out
+    return ArrayList(byKey.values)
 }
 
 /**
- * A stable key for deduplicating a building across tiles. Source-tile features often have no
- * feature id, so we fall back to osm_id and finally to the rounded first vertex — the same
- * building footprint hashes to the same key wherever it appears.
+ * A stable key for deduplicating a building across tiles. We deliberately do NOT use
+ * `feature.id()`: in vector tiles the feature id is tile-local (it restarts per tile), so two
+ * different buildings in neighbouring tiles can share an id and would wrongly collapse into one —
+ * dropping real buildings and leaving gaps in the shadows. `osm_id` is globally unique when the
+ * source carries it; otherwise we key on the footprint geometry (rounded centroid + vertex count),
+ * which is stable for the same building and distinct for different ones.
  */
 private fun featureId(feature: Feature, ring: List<LatLng>): String {
-    feature.id()?.let { return it }
     feature.properties()?.get("osm_id")?.let { if (!it.isJsonNull) return "osm:${it.asString}" }
-    val p = ring[0]
-    return "geo:${Math.round(p.lat * 1e6)}_${Math.round(p.lng * 1e6)}"
+    var sumLat = 0.0
+    var sumLng = 0.0
+    for (p in ring) { sumLat += p.lat; sumLng += p.lng }
+    val cLat = Math.round((sumLat / ring.size) * 1e6)
+    val cLng = Math.round((sumLng / ring.size) * 1e6)
+    return "geo:${cLat}_${cLng}_${ring.size}"
 }
 
 private fun extractHeight(feature: Feature): Double {

@@ -366,7 +366,9 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun buildingsInView(c: LatLng = center, buildings: List<Building> = activeBuildings): List<Building> {
         val b = bounds ?: return buildingsNear(c, buildings)
-        val box = BoundingBox(b.south, b.west, b.north, b.east).expandedMeters(150.0)
+        // Expand the view bbox so buildings just outside screen can still cast shadows into view.
+        // At a 10° sun elevation a 30m building casts a ~170m shadow; use 500m to cover low angles.
+        val box = BoundingBox(b.south, b.west, b.north, b.east).expandedMeters(500.0)
         return buildings.filter { box.contains(it.centroid()) }
     }
 
@@ -513,7 +515,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private companion object {
-        const val MAX_SHADOWS = 400
+        const val MAX_SHADOWS = 600
         val EMPTY_RING = emptyList<LatLng>()
         const val MIN_BUNDLED_BUILDINGS = 1000
         const val MAX_CACHE_ENTRIES = 6000

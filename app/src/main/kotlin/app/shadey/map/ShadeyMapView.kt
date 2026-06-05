@@ -122,7 +122,13 @@ fun ShadeyMap(
                                 return@Runnable
                             }
                             if (buildingLayerIds.isNotEmpty()) {
-                                val rect = RectF(0f, 0f, mapView.width.toFloat(), mapView.height.toFloat())
+                                // Expand rect by 20% on each side so buildings near screen edges
+                                // (which can still cast shadows into the view) are included.
+                                val w = mapView.width.toFloat()
+                                val h = mapView.height.toFloat()
+                                val padX = w * 0.2f
+                                val padY = h * 0.2f
+                                val rect = RectF(-padX, -padY, w + padX, h + padY)
                                 val features = map.queryRenderedFeatures(rect, *buildingLayerIds)
                                 onBuildingsQueried(features, false)
                             }

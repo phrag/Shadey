@@ -116,7 +116,7 @@ services — only for the specific features listed below.
 |---|---|---|---|---|
 | **Base map** | Automatically whenever the map is on screen (including in Berlin), if you're online | `tiles.openfreemap.org` (OpenFreeMap) | The map area you're viewing — the tile coordinates of wherever you pan/zoom | To draw the streets, water and labels *under* the shadow overlay |
 | **Place search** | Only when you type in the search box | `nominatim.openstreetmap.org` (OSM Nominatim) | Your search text, plus the current map area to bias results | To find a place to jump to or download |
-| **Download a city** | Only when you tap **Download** on a result | `overpass-api.de`, falling back to `overpass.kumi.systems` then `maps.mail.ru` | The bounding box (≈8 × 8 km) of the chosen area | To fetch that city's building footprints + heights so its shade works offline afterwards |
+| **Download a city** | Only when you tap **Download** on a result | `overpass-api.de`, falling back to `overpass.kumi.systems` | The bounding box (≈8 × 8 km) of the chosen area | To fetch that city's building footprints + heights so its shade works offline afterwards |
 
 A few things worth being explicit about:
 
@@ -127,10 +127,8 @@ A few things worth being explicit about:
 - Every request identifies the app with a `User-Agent` of
   `Shadey/1.0 (+https://github.com/phrag/shadey)`. No device ID, advertising ID,
   or personal data is attached.
-- `maps.mail.ru` is a public Overpass mirror operated by Mail.ru / VK. It is
-  tried **only as a last-resort fallback**, if both `overpass-api.de` and
-  `overpass.kumi.systems` are unreachable, and **only** when you explicitly
-  download a city.
+- City downloads only ever contact the two community Overpass mirrors above
+  (`overpass.kumi.systems` is tried only if `overpass-api.de` is unreachable).
 
 ### Offline mode
 

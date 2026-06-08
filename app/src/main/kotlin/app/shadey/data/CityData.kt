@@ -86,7 +86,6 @@ object BuildingDownloader {
     private val ENDPOINTS = listOf(
         "https://overpass-api.de/api/interpreter",
         "https://overpass.kumi.systems/api/interpreter",
-        "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
     )
 
     // Cap the downloaded area so a single city stays a manageable size on a phone.

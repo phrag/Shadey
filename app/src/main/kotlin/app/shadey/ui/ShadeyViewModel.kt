@@ -223,7 +223,9 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     fun moveTo(p: LatLng) {
         center = p
         _state.update { it.copy(cameraTarget = p) }
-        recompute()
+        // Force a re-rank: the spot order now depends on distance from the map centre,
+        // not just the sun's position, so a moved centre must always refresh it.
+        recompute(rank = true)
     }
 
     fun onCameraTargetConsumed() = _state.update { it.copy(cameraTarget = null) }
@@ -260,7 +262,9 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
             activeBuildings = bundledBuildings
             _state.update { it.copy(sourceLabel = "Berlin · ${bundledBuildings.size} buildings") }
         }
-        recompute()
+        // Force a re-rank: the spot order now depends on distance from the map centre,
+        // not just the sun's position, so a moved centre must always refresh it.
+        recompute(rank = true)
     }
 
     /**
@@ -444,7 +448,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                 val doRank = rank || rankedSunKey != sunKey || _state.value.ranked.isEmpty()
                 val ranked = if (doRank) {
                     rankedSunKey = sunKey
-                    ranker.rank(spots, now) { buildingsNear(it.latLng, frozenBuildings, radiusMeters = 150.0) }
+                    ranker.rank(spots, now, frozenCenter) { buildingsNear(it.latLng, frozenBuildings, radiusMeters = 150.0) }
                 } else null
                 rings to ranked
             }

@@ -648,6 +648,12 @@ private fun SelectedCard(info: SpotSunInfo, zone: ZoneId, onRemove: () -> Unit, 
 @Composable
 private fun SettingsDialog(onDismiss: () -> Unit) {
     val uriHandler = LocalUriHandler.current
+    val context = LocalContext.current
+    val versionName = remember {
+        runCatching {
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName
+        }.getOrNull().orEmpty()
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
@@ -673,6 +679,16 @@ private fun SettingsDialog(onDismiss: () -> Unit) {
                 LinkRow("GitHub: github.com/phrag") { uriHandler.openUri("https://github.com/phrag") }
                 LinkRow("Project: github.com/phrag/shadey") {
                     uriHandler.openUri("https://github.com/phrag/shadey")
+                }
+                Spacer(Modifier.height(8.dp))
+                if (versionName.isNotEmpty()) {
+                    Text(
+                        "Version $versionName",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+                LinkRow("Changelog") {
+                    uriHandler.openUri("https://github.com/phrag/shadey/releases")
                 }
             }
         },

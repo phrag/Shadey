@@ -4,6 +4,7 @@ import app.shadey.core.model.Building
 import app.shadey.core.model.LatLng
 import app.shadey.core.model.SolarPosition
 import app.shadey.core.model.Sunlight
+import app.shadey.core.model.Tree
 import app.shadey.core.shade.ShadowEngine
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
@@ -75,6 +76,22 @@ class ShadowEngineTest {
         assertTrue(shadow!!.maxOf { it.lat } > footprintMaxLat) {
             "shadow max lat ${shadow.maxOf { it.lat }} vs footprint $footprintMaxLat"
         }
+    }
+
+    @Test
+    fun `tree canopy toward the sun shades like a small building`() {
+        // A 12m tree with a 3m crown radius, 12m south of the point — close enough that its
+        // short shadow still reaches at a 30 degree sun (length = 12 / tan(30deg) =~ 21m).
+        val dLat = 12.0 / 111_320.0
+        val tree = Tree("t", LatLng(point.lat - dLat, point.lng), crownRadiusMeters = 3.0, heightMeters = 12.0)
+        assertEquals(Sunlight.SHADE, engine.sunlightAt(point, sunInSouth, listOf(tree.canopy())))
+    }
+
+    @Test
+    fun `tree canopy away from the sun does not shade`() {
+        val dLat = 12.0 / 111_320.0
+        val tree = Tree("t", LatLng(point.lat + dLat, point.lng), crownRadiusMeters = 3.0, heightMeters = 12.0)
+        assertEquals(Sunlight.SUN, engine.sunlightAt(point, sunInSouth, listOf(tree.canopy())))
     }
 
     @Test

@@ -19,12 +19,17 @@ class SavedSpotsStore(private val context: Context) {
 
     private val userSpotsKey = stringPreferencesKey("user_spots")
     private val roamingKey = booleanPreferencesKey("allow_osm_roaming")
+    private val treeShadeKey = booleanPreferencesKey("tree_shade")
 
     val userSpots: Flow<List<Spot>> = context.dataStore.data.map { prefs ->
         prefs[userSpotsKey]?.let { SpotsJson.parse(it) } ?: emptyList()
     }
 
     val allowRoaming: Flow<Boolean> = context.dataStore.data.map { it[roamingKey] ?: true }
+
+    /** Whether tree canopies (where known) cast shade alongside buildings — opt-in: an
+     *  approximation built on much rougher data (estimated positions/sizes) than buildings. */
+    val treeShade: Flow<Boolean> = context.dataStore.data.map { it[treeShadeKey] ?: false }
 
     suspend fun addOrUpdate(spot: Spot) {
         context.dataStore.edit { prefs ->
@@ -43,5 +48,9 @@ class SavedSpotsStore(private val context: Context) {
 
     suspend fun setAllowRoaming(value: Boolean) {
         context.dataStore.edit { it[roamingKey] = value }
+    }
+
+    suspend fun setTreeShade(value: Boolean) {
+        context.dataStore.edit { it[treeShadeKey] = value }
     }
 }

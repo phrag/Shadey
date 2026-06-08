@@ -3,6 +3,8 @@ package app.shadey.core.data
 import app.shadey.core.model.Building
 import app.shadey.core.model.LatLng
 import app.shadey.core.model.Spot
+import app.shadey.core.model.Tree
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -72,6 +74,51 @@ object GeoJsonBuildings {
             ?.let { it.doubleOrNull ?: it.contentOrNull?.toDoubleOrNull() }
             ?.let { if (it > 0) return it * metersPerLevel }
         return default
+    }
+}
+
+/**
+ * Parses tree point-features (`properties.kind == "tree"`) out of the same FeatureCollection
+ * the city download emits alongside building polygons — [GeoJsonBuildings] already ignores
+ * `Point` geometry, so the two parsers can run over the same text without conflict.
+ *
+ * OSM rarely measures crown size or height for individual trees, so most of the time these
+ * fall back to [defaultCrownRadiusMeters]/[defaultHeightMeters] — a generic mature street
+ * tree. That roughness is exactly why tree shade is an opt-in layer rather than treated with
+ * the same confidence as building shadows.
+ */
+object GeoJsonTrees {
+    private val json = Json { ignoreUnknownKeys = true; isLenient = true }
+
+    fun parse(
+        text: String,
+        defaultCrownRadiusMeters: Double = 3.0,
+        defaultHeightMeters: Double = 12.0,
+    ): List<Tree> {
+        val features = runCatching { json.parseToJsonElement(text).jsonObject["features"]?.jsonArray }
+            .getOrNull() ?: return emptyList()
+        val out = ArrayList<Tree>(features.size)
+        var auto = 0
+        for (feature in features) {
+            val obj = feature as? JsonObject ?: continue
+            val props = obj["properties"] as? JsonObject ?: continue
+            if (props["kind"]?.jsonPrimitive?.contentOrNull != "tree") continue
+            val geom = obj["geometry"] as? JsonObject ?: continue
+            if (geom["type"]?.jsonPrimitive?.contentOrNull != "Point") continue
+            val coords = geom["coordinates"] as? JsonArray ?: continue
+            val lng = coords.getOrNull(0)?.jsonPrimitive?.doubleOrNull ?: continue
+            val lat = coords.getOrNull(1)?.jsonPrimitive?.doubleOrNull ?: continue
+            val crownRadius = props["crown_radius"]?.jsonPrimitive?.doubleOrNull?.takeIf { it > 0 }
+                ?: defaultCrownRadiusMeters
+            val height = props["height"]?.jsonPrimitive?.doubleOrNull?.takeIf { it > 0 }
+                ?: defaultHeightMeters
+            val deciduous = props["deciduous"]?.jsonPrimitive?.booleanOrNull ?: true
+            val id = obj["id"]?.jsonPrimitive?.contentOrNull
+                ?: props["osm_id"]?.jsonPrimitive?.contentOrNull
+                ?: "t${auto++}"
+            out.add(Tree(id, LatLng(lat, lng), crownRadius, height, deciduous))
+        }
+        return out
     }
 }
 

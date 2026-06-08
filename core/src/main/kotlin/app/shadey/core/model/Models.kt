@@ -1,5 +1,6 @@
 package app.shadey.core.model
 
+import app.shadey.core.geo.Polygons
 import kotlinx.serialization.Serializable
 
 /** A geographic coordinate in WGS84 degrees. */
@@ -17,6 +18,31 @@ data class Building(
     val heightMeters: Double,
     val minHeightMeters: Double = 0.0,
 )
+
+/**
+ * A tree (or a sampled point along a row of trees), modelled as a round canopy centred on
+ * [position]. [deciduous] flags trees that lose their leaves — and so their shade — for part
+ * of the year (OSM `leaf_cycle=deciduous`); evergreens (incl. conifers) keep theirs.
+ *
+ * Position, crown size and height are frequently estimated rather than measured — this is a
+ * much rougher input than building footprints, which is exactly why tree shade is opt-in.
+ */
+data class Tree(
+    val id: String,
+    val position: LatLng,
+    val crownRadiusMeters: Double,
+    val heightMeters: Double,
+    val deciduous: Boolean = true,
+) {
+    /**
+     * Approximates the canopy as a short, solid prism from the ground to [heightMeters] —
+     * i.e. a [Building] the existing shadow engine can already cast and test against.
+     * This ignores the gap beneath the canopy, which only matters for someone standing right
+     * at the trunk under a high sun — exactly when shadows are shortest and least relevant.
+     */
+    fun canopy(): Building =
+        Building(id, Polygons.circleFootprint(position, crownRadiusMeters), heightMeters)
+}
 
 @Serializable
 enum class SpotCategory { CAFE, BAR, RESTAURANT, PARK, SQUARE, BENCH, WATERSIDE, VIEWPOINT, PLAYGROUND, OTHER }

@@ -115,11 +115,16 @@ object BuildingDownloader {
      */
     suspend fun downloadGeoJson(bbox: DoubleArray): String = withContext(Dispatchers.IO) {
         val (s, w, n, e) = bbox
+        // Trees come along for the ride so the cached city is ready for tree-shade the moment
+        // it's switched on — no separate download/toggle gating to keep track of. Individual
+        // tree nodes only (not rows/woods yet): the single most common, simplest-to-model case,
+        // and Berlin's tree-cadastre import alone makes it worth having.
         val query = """
             [out:json][timeout:120];
             (
               way["building"]($s,$w,$n,$e);
               relation["building"]["type"="multipolygon"]($s,$w,$n,$e);
+              node["natural"="tree"]($s,$w,$n,$e);
             );
             out body geom;
         """.trimIndent()
@@ -191,7 +196,9 @@ object BuildingDownloader {
     }
 
     private fun parseElement(r: android.util.JsonReader): JSONObject? {
-        var type = ""; var id = ""; var height = DEFAULT_HEIGHT_M
+        var type = ""; var id = ""
+        var lat = Double.NaN; var lon = Double.NaN
+        var tags: Map<String, String> = emptyMap()
         var wayRing: JSONArray? = null
         val outerRings = JSONArray()
         r.beginObject()
@@ -199,20 +206,24 @@ object BuildingDownloader {
             when (r.nextName()) {
                 "type" -> type = r.nextString()
                 "id"   -> id = r.nextLong().toString()
-                "tags" -> height = readHeight(r)
+                "lat"  -> lat = r.nextDouble()
+                "lon"  -> lon = r.nextDouble()
+                "tags" -> tags = readTags(r)
                 "geometry" -> wayRing = readRing(r)
                 "members"  -> readOuters(r, outerRings)
                 else -> r.skipValue()
             }
         }
         r.endObject()
-        val props = JSONObject().put("height", height).put("osm_id", "$type/$id")
         return when (type) {
-            "way" -> wayRing?.let { feature(props, polygon(it)) }
+            "way" -> wayRing?.let { feature(buildingProps(tags, type, id), polygon(it)) }
             "relation" -> if (outerRings.length() > 0) {
                 val polys = JSONArray()
                 for (i in 0 until outerRings.length()) polys.put(JSONArray().put(outerRings.getJSONArray(i)))
-                feature(props, JSONObject().put("type", "MultiPolygon").put("coordinates", polys))
+                feature(buildingProps(tags, type, id), JSONObject().put("type", "MultiPolygon").put("coordinates", polys))
+            } else null
+            "node" -> if (tags["natural"] == "tree" && !lat.isNaN() && !lon.isNaN()) {
+                feature(treeProps(tags, id), point(lon, lat))
             } else null
             else -> null
         }
@@ -256,29 +267,45 @@ object BuildingDownloader {
         r.endArray()
     }
 
-    private fun readHeight(r: android.util.JsonReader): Double {
-        var explicit = Double.NaN; var fromLevels = Double.NaN
+    /** OSM tag values are always JSON strings — read the whole `tags` object as a string map. */
+    private fun readTags(r: android.util.JsonReader): Map<String, String> {
+        val tags = HashMap<String, String>()
         r.beginObject()
-        while (r.hasNext()) {
-            when (r.nextName()) {
-                "height", "building:height" -> {
-                    val v = r.nextString().filter { it.isDigit() || it == '.' }.toDoubleOrNull()
-                    if (v != null && v > 0) explicit = v
-                }
-                "building:levels" -> {
-                    val v = r.nextString().substringBefore(";").toDoubleOrNull()
-                    if (v != null && v > 0) fromLevels = v * METERS_PER_LEVEL
-                }
-                else -> r.skipValue()
-            }
-        }
+        while (r.hasNext()) tags[r.nextName()] = r.nextString()
         r.endObject()
-        return when {
-            !explicit.isNaN()    -> explicit
-            !fromLevels.isNaN()  -> fromLevels
-            else                 -> DEFAULT_HEIGHT_M
-        }
+        return tags
     }
+
+    private fun buildingProps(tags: Map<String, String>, type: String, id: String): JSONObject =
+        JSONObject().put("height", buildingHeight(tags)).put("osm_id", "$type/$id")
+
+    private fun buildingHeight(tags: Map<String, String>): Double {
+        (tags["height"] ?: tags["building:height"])
+            ?.filter { it.isDigit() || it == '.' }?.toDoubleOrNull()
+            ?.let { if (it > 0) return it }
+        tags["building:levels"]?.substringBefore(";")?.toDoubleOrNull()
+            ?.let { if (it > 0) return it * METERS_PER_LEVEL }
+        return DEFAULT_HEIGHT_M
+    }
+
+    /**
+     * Tree properties as point-feature tags: `crown_radius`/`height` are included only when
+     * OSM actually has them (most tree nodes don't) — [GeoJsonTrees] fills in defaults for
+     * the rest. `deciduous` defaults true (most urban street trees are), false only for an
+     * explicit `leaf_cycle=evergreen`.
+     */
+    private fun treeProps(tags: Map<String, String>, id: String): JSONObject {
+        val props = JSONObject()
+            .put("kind", "tree")
+            .put("osm_id", "node/$id")
+            .put("deciduous", tags["leaf_cycle"] != "evergreen")
+        tags["diameter_crown"]?.toDoubleOrNull()?.let { if (it > 0) props.put("crown_radius", it / 2.0) }
+        tags["height"]?.filter { it.isDigit() || it == '.' }?.toDoubleOrNull()?.let { if (it > 0) props.put("height", it) }
+        return props
+    }
+
+    private fun point(lng: Double, lat: Double): JSONObject =
+        JSONObject().put("type", "Point").put("coordinates", JSONArray().put(lng).put(lat))
 
     private fun feature(props: JSONObject, geometry: JSONObject): JSONObject =
         JSONObject().put("type", "Feature").put("properties", props).put("geometry", geometry)

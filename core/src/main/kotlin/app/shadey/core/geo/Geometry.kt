@@ -1,9 +1,11 @@
 package app.shadey.core.geo
 
 import app.shadey.core.model.LatLng
+import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.sin
 
 /** A 2D vector in local meters (x = east, y = north). */
 data class Vec2(val x: Double, val y: Double) {
@@ -105,5 +107,18 @@ object Polygons {
         lower.removeAt(lower.size - 1)
         upper.removeAt(upper.size - 1)
         return lower + upper
+    }
+
+    /**
+     * A regular [sides]-gon approximating a circle of [radiusMeters] around [center], as a
+     * ring of lat/lng. Used to turn a tree's point position and crown radius into a footprint
+     * that the (footprint + height) shadow model already knows how to cast shadows from.
+     */
+    fun circleFootprint(center: LatLng, radiusMeters: Double, sides: Int = 8): List<LatLng> {
+        val proj = LocalProjection(center)
+        return (0 until sides).map { i ->
+            val angle = 2.0 * PI * i / sides
+            proj.toLatLng(Vec2(radiusMeters * sin(angle), radiusMeters * cos(angle)))
+        }
     }
 }

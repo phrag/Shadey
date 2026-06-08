@@ -66,4 +66,16 @@ class GeometryTest {
         assertTrue(abs(north.y - 111.2) < 2.0) { "north.y ${north.y}" }
         assertTrue(abs(north.x) < 1e-6)
     }
+
+    @Test
+    fun `circle footprint vertices sit at the requested radius`() {
+        val center = LatLng(52.52, 13.405)
+        val proj = LocalProjection(center)
+        val ring = Polygons.circleFootprint(center, radiusMeters = 4.0, sides = 8)
+        assertEquals(8, ring.size)
+        for (v in ring) {
+            val d = proj.toLocal(v).length()
+            assertTrue(abs(d - 4.0) < 1e-6) { "vertex distance $d" }
+        }
+    }
 }

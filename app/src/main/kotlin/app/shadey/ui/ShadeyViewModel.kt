@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.shadey.core.data.GeoJsonBuildings
+import app.shadey.core.data.GeoJsonTrees
 import app.shadey.core.data.SpotsJson
 import app.shadey.core.model.Building
 import app.shadey.core.model.LatLng
@@ -65,6 +66,12 @@ data class ShadeyUiState(
      * always loads regardless — this only gates the Nominatim/Overpass requests.
      */
     val allowRoaming: Boolean = true,
+    /**
+     * Whether tree canopies (where the data is known) cast shade alongside buildings. Off by
+     * default — tree position/size data is far rougher than building footprints (often
+     * estimated), and currently only available for freshly downloaded cities.
+     */
+    val treeShade: Boolean = false,
     /** True when there's no usable building data yet, so the UI should prompt for a city. */
     val promptCity: Boolean = false,
 ) {
@@ -89,6 +96,10 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     private var curated: List<Spot> = emptyList()
     private var userSpots: List<Spot> = emptyList()
     private var activeBuildings: List<Building> = emptyList()
+    // Tree canopies for the active city, pre-converted to the short solid prisms the shadow
+    // engine already knows how to cast/test (see Tree.canopy()) — populated only for cities
+    // downloaded since tree fetching was added; empty (and harmless) everywhere else.
+    private var activeTreeCanopies: List<Building> = emptyList()
     // Buildings harvested from tiles, accumulated across pans (insertion-ordered for LRU eviction).
     private val accumulated = LinkedHashMap<String, Building>()
     private var bundledBuildings: List<Building> = emptyList()
@@ -117,6 +128,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     // forced re-rank request can't be lost to a later, unforced recompute cancelling it.
     @Volatile private var rankedSunKey: String? = null
     @Volatile private var rankedCenter: LatLng? = null
+    @Volatile private var rankedTreeShade: Boolean = false
 
     init {
         viewModelScope.launch {
@@ -138,7 +150,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
             val lastGeo = last?.let { withContext(Dispatchers.IO) { cityStore.geoJsonOf(it) } }
             val restored = if (lastCity != null && lastGeo != null) {
                 val b = withContext(Dispatchers.Default) { GeoJsonBuildings.parse(lastGeo) }
-                if (b.isNotEmpty()) { activateCity(lastCity, b); true } else false
+                if (b.isNotEmpty()) { activateCity(lastCity, b, treeCanopiesFrom(lastGeo)); true } else false
             } else false
             if (!restored) {
                 recompute(rank = true, immediate = true)
@@ -156,6 +168,17 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch {
             store.allowRoaming.collect { allow -> _state.update { it.copy(allowRoaming = allow) } }
+        }
+        viewModelScope.launch {
+            // Restores the persisted value on launch (and keeps it in sync thereafter). Only
+            // recomputes when the value actually changes from what's already showing — that
+            // covers "restored true on launch, before any recompute has run with it" without
+            // doubling up on the recompute setTreeShade already triggers when the user flips it.
+            store.treeShade.collect { on ->
+                val changed = _state.value.treeShade != on
+                _state.update { it.copy(treeShade = on) }
+                if (changed) recompute(rank = true)
+            }
         }
     }
 
@@ -334,6 +357,13 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { store.setAllowRoaming(value) }
     }
 
+    /** Toggle whether tree canopies (when known) cast shade alongside buildings. */
+    fun setTreeShade(value: Boolean) {
+        _state.update { it.copy(treeShade = value) }
+        viewModelScope.launch { store.setTreeShade(value) }
+        recompute(rank = true)
+    }
+
     /** Download a searched city's buildings, cache them, and switch to it. */
     fun downloadCity(hit: CityHit) {
         if (!_state.value.allowRoaming) {
@@ -355,7 +385,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                     bbox[0], bbox[1], bbox[2], bbox[3], buildings.size,
                 )
                 val updated = withContext(Dispatchers.IO) { cityStore.save(city, geoJson); cityStore.list() }
-                activateCity(city, buildings)
+                activateCity(city, buildings, treeCanopiesFrom(geoJson))
                 _state.update {
                     it.copy(cityBusy = false, cityStatus = null, citySearch = emptyList(),
                         cachedCities = updated)
@@ -374,15 +404,26 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
             val buildings = withContext(Dispatchers.Default) { GeoJsonBuildings.parse(geoJson) }
             if (buildings.isEmpty()) return@launch
             withContext(Dispatchers.IO) { cityStore.setLastUsed(slug) }
-            activateCity(city, buildings)
+            activateCity(city, buildings, treeCanopiesFrom(geoJson))
         }
     }
 
+    /**
+     * Tree canopies from a city's cached GeoJSON, pre-converted to the solid prisms the
+     * shadow engine casts/tests against and capped at [MAX_TREES]. Cities downloaded before
+     * tree fetching was added simply have none — [GeoJsonTrees.parse] returns an empty list,
+     * and the tree-shade toggle quietly does nothing until the city is re-downloaded.
+     */
+    private suspend fun treeCanopiesFrom(geoJson: String): List<Building> = withContext(Dispatchers.Default) {
+        GeoJsonTrees.parse(geoJson).take(MAX_TREES).map { it.canopy() }
+    }
+
     /** Make a downloaded city the active region: its data drives shadows and the map jumps to it. */
-    private fun activateCity(city: CachedCity, buildings: List<Building>) {
+    private fun activateCity(city: CachedCity, buildings: List<Building>, trees: List<Building> = emptyList()) {
         bundledBuildings = buildings
         bundledRegion = BoundingBox(city.south, city.west, city.north, city.east)
         activeBuildings = buildings
+        activeTreeCanopies = trees
         accumulated.clear()
         shadowCache.clear()
         shadowCacheSunKey = null
@@ -394,10 +435,20 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         recompute(rank = true, immediate = true)
     }
 
+    /**
+     * Everything that should currently cast/block sunlight: buildings, plus — when the
+     * tree-shade toggle is on and the active city has tree data — synthetic canopy prisms.
+     * Merging here (rather than into [activeBuildings] itself) means flipping the toggle
+     * never needs a re-download or re-parse, just a recompute.
+     */
+    private fun shadowSources(): List<Building> =
+        if (_state.value.treeShade && activeTreeCanopies.isNotEmpty()) activeBuildings + activeTreeCanopies
+        else activeBuildings
+
     private fun evaluatePoint(p: LatLng): SpotSunInfo {
         val now = instant()
         val sun = SolarCalculator.position(p, now)
-        val near = buildingsNear(p)
+        val near = buildingsNear(p, shadowSources())
         val tmp = Spot("dropped", "Dropped pin", p.lat, p.lng, source = SpotSource.USER)
         return SpotSunInfo(tmp, engine.sunlightAt(p, sun, near), sun, engine.nextTransition(p, near, now)?.at)
     }
@@ -431,9 +482,10 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
             val now = instant(_state.value)
             val spots = (curated + userSpots).distinctBy { it.id }
             // Snapshot mutable fields before the background thread — the sort comparator below
-            // must see a stable centre, and activeBuildings can be swapped on the main thread.
+            // must see a stable centre, and activeBuildings/treeShade can change on the main thread.
             val frozenCenter = center
-            val frozenBuildings = activeBuildings
+            val frozenTreeShade = _state.value.treeShade
+            val frozenBuildings = shadowSources()
             val result = withContext(Dispatchers.Default) {
                 val sun = SolarCalculator.position(frozenCenter, now)
                 // Sun bucket — shadows are visually identical within ~0.5°. Cache per bucket.
@@ -448,15 +500,17 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                             .takeIf { it.isNotEmpty() }
                     }
                 // Rank when the sun moved, the map centre moved (ranking is centre-relative
-                // now), when forced, or on the very first pass. The centre check matters even
-                // for unforced calls: a later plain recompute() (e.g. once buildings finish
-                // loading) can cancel and replace an in-flight forced re-rank, and it must
-                // still notice the centre changed rather than silently reusing a stale order.
+                // now), the tree-shade toggle flipped (it changes which buildings feed the sun
+                // test), when forced, or on the very first pass. The centre/toggle checks matter
+                // even for unforced calls: a later plain recompute() (e.g. once buildings finish
+                // loading) can cancel and replace an in-flight forced re-rank, and it must still
+                // notice the origin or sources changed rather than silently reusing a stale order.
                 val doRank = rank || rankedSunKey != sunKey || rankedCenter != frozenCenter ||
-                    _state.value.ranked.isEmpty()
+                    rankedTreeShade != frozenTreeShade || _state.value.ranked.isEmpty()
                 val ranked = if (doRank) {
                     rankedSunKey = sunKey
                     rankedCenter = frozenCenter
+                    rankedTreeShade = frozenTreeShade
                     ranker.rank(spots, now, frozenCenter) { buildingsNear(it.latLng, frozenBuildings, radiusMeters = 150.0) }
                 } else null
                 rings to ranked
@@ -488,7 +542,10 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         val box = if (b != null)
             "${(b.south * 1000).toInt()}_${(b.west * 1000).toInt()}_${(b.north * 1000).toInt()}_${(b.east * 1000).toInt()}"
         else "none"
-        return "$box|${_state.value.date}|${activeBuildings.size}"
+        // Including the tree-shade flag (and how many canopies are in play) means flipping the
+        // toggle busts the precomputed day frames just like a building-set change would.
+        val trees = if (_state.value.treeShade) activeTreeCanopies.size else 0
+        return "$box|${_state.value.date}|${activeBuildings.size}|$trees"
     }
 
     private fun rankBucket(s: Sunlight) = when (s) {
@@ -507,7 +564,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         if (framesViewKey == key) return
         frameJob?.cancel()
         val frozenCenter = center
-        val frozenBuildings = activeBuildings
+        val frozenBuildings = shadowSources()
         val date = _state.value.date
         val spots = (curated + userSpots).distinctBy { it.id }
         frameJob = viewModelScope.launch(Dispatchers.Default) {
@@ -570,5 +627,10 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         const val MAX_CACHE_ENTRIES = 6000
         const val MAX_ACCUMULATED = 8000
         const val FRAME_STEP_MIN = 10
+        // A generous cap on how many tree canopies a city keeps active. Dense urban tree
+        // cadastres (Berlin's alone lists ~700k trees citywide) could otherwise hand the shadow
+        // engine tens of thousands of extra prisms for one download — this bounds that without
+        // needing the download bbox query itself to be smarter about it.
+        const val MAX_TREES = 6000
     }
 }

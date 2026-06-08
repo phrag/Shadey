@@ -1,7 +1,8 @@
 # ☀️ Shadey
 
 <p align="center">
-  <img src="docs/screenshot.png" width="320" alt="Shadey showing ground shadows across a Berlin city block at 19:56">
+  <img src="docs/screenshot.png" width="300" alt="Shadey showing ground shadows across a Berlin city block at 19:56">
+  <img src="docs/screenshot-berlin.png" width="300" alt="Shadey over Friedrichshain, Berlin with the full bundled building dataset (37,819 buildings)">
 </p>
 
 **Find the sun.** Shadey shows whether a spot — a café terrace, a park bench, a

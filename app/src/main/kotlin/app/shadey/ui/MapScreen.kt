@@ -46,7 +46,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -59,7 +58,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -79,7 +77,6 @@ import app.shadey.core.rank.SpotSunInfo
 import app.shadey.data.CityHit
 import app.shadey.data.Geocoder
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.ZoneId
 import kotlin.math.roundToInt
@@ -90,9 +87,9 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
     val state by vm.state.collectAsStateWithLifecycle()
     val zone = remember { vm.zone() }
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     var showSettings by remember { mutableStateOf(false) }
     var showCities by remember { mutableStateOf(false) }
+    var showSpots by remember { mutableStateOf(false) }
     val sheetState = rememberBottomSheetScaffoldState()
 
     // Search state — lives entirely in the UI layer
@@ -200,44 +197,15 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
                     valueRange = 0f..1439f,
                 )
 
-                val isExpanded = sheetState.bottomSheetState.currentValue == SheetValue.Expanded
-
-                if (isExpanded) {
+                if (state.ranked.isNotEmpty()) {
                     Spacer(Modifier.height(4.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            "Spots",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        Spacer(Modifier.weight(1f))
-                        TextButton(onClick = { vm.dropPinAtCenter(); }) {
-                            Icon(Icons.Filled.Add, null, Modifier.size(18.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("Add spot here")
-                        }
-                    }
-                    Spacer(Modifier.height(2.dp))
-                    LazyColumn(Modifier.fillMaxWidth().heightIn(max = 320.dp)) {
-                        items(state.ranked, key = { it.spot.id }) { info ->
-                            SpotRow(
-                                info, zone,
-                                selected = info.spot.id == state.selectedId,
-                                onClick = {
-                                    vm.selectSpot(info.spot.id)
-                                    vm.moveTo(app.shadey.core.model.LatLng(info.spot.lat, info.spot.lng))
-                                },
-                            )
-                        }
-                    }
-                } else if (state.ranked.isNotEmpty()) {
-                    // Compact summary row — swipe up or tap to expand
+                    // Tap to open the full ranked spot list in a panel over the map.
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(12.dp))
-                            .clickable { scope.launch { sheetState.bottomSheetState.expand() } }
+                            .clickable { showSpots = true }
                             .padding(vertical = 6.dp),
                     ) {
                         val top = state.ranked.first()
@@ -457,6 +425,52 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
 
     if (showSettings) SettingsDialog(onDismiss = { showSettings = false })
     if (showCities) CitiesDialog(state, vm, onDismiss = { showCities = false })
+    if (showSpots) SpotsDialog(state, vm, zone, onDismiss = { showSpots = false })
+}
+
+@Composable
+private fun SpotsDialog(
+    state: ShadeyUiState,
+    vm: ShadeyViewModel,
+    zone: ZoneId,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Spots", modifier = Modifier.weight(1f))
+                TextButton(onClick = { vm.dropPinAtCenter(); onDismiss() }) {
+                    Icon(Icons.Filled.Add, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Add here")
+                }
+            }
+        },
+        text = {
+            if (state.ranked.isEmpty()) {
+                Text(
+                    "No spots yet. Tap the map to drop a pin, or use “Add here”.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            } else {
+                LazyColumn(Modifier.fillMaxWidth().heightIn(max = 420.dp)) {
+                    items(state.ranked, key = { it.spot.id }) { info ->
+                        SpotRow(
+                            info, zone,
+                            selected = info.spot.id == state.selectedId,
+                            onClick = {
+                                vm.selectSpot(info.spot.id)
+                                vm.moveTo(app.shadey.core.model.LatLng(info.spot.lat, info.spot.lng))
+                                onDismiss()
+                            },
+                        )
+                    }
+                }
+            }
+        },
+    )
 }
 
 @Composable

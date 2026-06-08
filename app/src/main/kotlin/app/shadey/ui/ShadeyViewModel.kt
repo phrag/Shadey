@@ -111,9 +111,12 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     // It persists across pans/zooms so revealing a previously-seen area is instant.
     private val shadowCache = java.util.concurrent.ConcurrentHashMap<String, List<LatLng>>()
     @Volatile private var shadowCacheSunKey: String? = null
-    // The sun bucket the spot ranking was last computed for. Ranking (nextTransition) is the
-    // expensive part, so we only redo it when the sun moves — never on a plain pan.
+    // The sun bucket and map centre the spot ranking was last computed for. Ranking
+    // (nextTransition) is the expensive part, so we skip it unless the sun moved or the
+    // origin changed enough to matter — checked here (not just via the `rank` flag) so a
+    // forced re-rank request can't be lost to a later, unforced recompute cancelling it.
     @Volatile private var rankedSunKey: String? = null
+    @Volatile private var rankedCenter: LatLng? = null
 
     init {
         viewModelScope.launch {
@@ -444,10 +447,16 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                         shadowCache.getOrPut(b.id) { engine.castShadow(b, sun) ?: EMPTY_RING }
                             .takeIf { it.isNotEmpty() }
                     }
-                // Rank only when the sun moved, when forced, or on the very first pass.
-                val doRank = rank || rankedSunKey != sunKey || _state.value.ranked.isEmpty()
+                // Rank when the sun moved, the map centre moved (ranking is centre-relative
+                // now), when forced, or on the very first pass. The centre check matters even
+                // for unforced calls: a later plain recompute() (e.g. once buildings finish
+                // loading) can cancel and replace an in-flight forced re-rank, and it must
+                // still notice the centre changed rather than silently reusing a stale order.
+                val doRank = rank || rankedSunKey != sunKey || rankedCenter != frozenCenter ||
+                    _state.value.ranked.isEmpty()
                 val ranked = if (doRank) {
                     rankedSunKey = sunKey
+                    rankedCenter = frozenCenter
                     ranker.rank(spots, now, frozenCenter) { buildingsNear(it.latLng, frozenBuildings, radiusMeters = 150.0) }
                 } else null
                 rings to ranked

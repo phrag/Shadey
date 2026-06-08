@@ -36,11 +36,9 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.BottomSheetScaffold
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -53,7 +51,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
-import androidx.compose.material3.rememberBottomSheetScaffoldState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -82,7 +79,6 @@ import java.time.Instant
 import java.time.ZoneId
 import kotlin.math.roundToInt
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MapScreen(vm: ShadeyViewModel = viewModel()) {
     val state by vm.state.collectAsStateWithLifecycle()
@@ -91,7 +87,6 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
     var showSettings by remember { mutableStateOf(false) }
     var showCities by remember { mutableStateOf(false) }
     var showSpots by remember { mutableStateOf(false) }
-    val sheetState = rememberBottomSheetScaffoldState()
 
     // Search state — lives entirely in the UI layer
     var searchActive by rememberSaveable { mutableStateOf(false) }
@@ -101,13 +96,6 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
 
     LaunchedEffect(state.promptCity) {
         if (state.promptCity) { showCities = true; vm.dismissCityPrompt() }
-    }
-
-    // Expand the sheet when a pin is dropped or a spot is selected so the card is visible.
-    LaunchedEffect(state.dropped, state.selected) {
-        if (state.dropped != null || state.selected != null) {
-            sheetState.bottomSheetState.expand()
-        }
     }
 
     // Debounced search-as-you-type, biased toward the current map viewport. Skipped entirely
@@ -136,27 +124,208 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
         ActivityResultContracts.RequestPermission()
     ) { granted -> if (granted) getAndMoveToLocation() }
 
-    BottomSheetScaffold(
-        scaffoldState = sheetState,
-        sheetPeekHeight = 190.dp,
-        sheetShape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
-        sheetTonalElevation = 4.dp,
-        sheetShadowElevation = 12.dp,
-        sheetDragHandle = {
-            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                Box(
-                    Modifier.padding(vertical = 10.dp)
-                        .size(width = 36.dp, height = 4.dp)
-                        .clip(RoundedCornerShape(2.dp))
-                        .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f))
-                )
+    Box(Modifier.fillMaxSize()) {
+        ShadeyMapLayer(state, vm)
+
+        // Search overlay (when active, replaces the title pill)
+        if (searchActive) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(horizontal = 8.dp, vertical = 8.dp)
+                    .fillMaxWidth(),
+                shape = RoundedCornerShape(28.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 4.dp,
+                shadowElevation = 4.dp,
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (searchBusy) {
+                        CircularProgressIndicator(
+                            Modifier.padding(start = 14.dp).size(20.dp),
+                            strokeWidth = 2.dp,
+                        )
+                    } else {
+                        Icon(
+                            Icons.Filled.Search,
+                            null,
+                            Modifier.padding(start = 14.dp).size(20.dp),
+                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                        )
+                    }
+                    TextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        singleLine = true,
+                        placeholder = { Text("Search places…") },
+                        modifier = Modifier.weight(1f),
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Color.Transparent,
+                            unfocusedContainerColor = Color.Transparent,
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent,
+                        ),
+                    )
+                    IconButton(onClick = {
+                        searchActive = false
+                        searchQuery = ""
+                        searchResults = emptyList()
+                    }) { Icon(Icons.Filled.Close, "Close search") }
+                }
             }
-        },
-        sheetContent = {
+
+            // Search results card
+            if (searchResults.isNotEmpty()) {
+                Card(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .statusBarsPadding()
+                        .padding(top = 68.dp)
+                        .padding(horizontal = 8.dp)
+                        .fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                ) {
+                    Column {
+                        searchResults.take(6).forEachIndexed { idx, hit ->
+                            val parts = hit.name.split(", ")
+                            val title = parts.first()
+                            val subtitle = parts.drop(1).joinToString(", ")
+                            Row(
+                                Modifier.fillMaxWidth()
+                                    .clickable {
+                                        vm.goToPlace(hit)
+                                        searchActive = false
+                                        searchQuery = ""
+                                        searchResults = emptyList()
+                                    }
+                                    .padding(horizontal = 16.dp, vertical = 11.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(
+                                    Icons.Filled.Search,
+                                    null,
+                                    Modifier.size(16.dp),
+                                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
+                                )
+                                Spacer(Modifier.width(12.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(title, style = MaterialTheme.typography.bodyMedium)
+                                    if (subtitle.isNotEmpty()) {
+                                        Text(
+                                            subtitle,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
+                                            maxLines = 1,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // Normal title pill
+            Surface(
+                modifier = Modifier.align(Alignment.TopStart).statusBarsPadding().padding(12.dp),
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+                tonalElevation = 3.dp,
+                shadowElevation = 3.dp,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                ) {
+                    Icon(
+                        Icons.Filled.WbSunny,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Column {
+                        Text("Shadey", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                        Text(
+                            state.sourceLabel,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                        )
+                    }
+                    if (state.busy) {
+                        Spacer(Modifier.width(8.dp))
+                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                    }
+                }
+            }
+        }
+
+        // Top-right button column
+        Column(
+            modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (!searchActive) {
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+                    tonalElevation = 3.dp, shadowElevation = 3.dp,
+                ) {
+                    IconButton(onClick = { searchActive = true }) {
+                        Icon(Icons.Filled.Search, "Search")
+                    }
+                }
+            }
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+                tonalElevation = 3.dp, shadowElevation = 3.dp,
+            ) {
+                IconButton(onClick = { showSettings = true }) {
+                    Icon(Icons.Filled.Settings, "Settings")
+                }
+            }
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+                tonalElevation = 3.dp, shadowElevation = 3.dp,
+            ) {
+                IconButton(onClick = { showCities = true }) {
+                    Icon(Icons.Filled.Public, "Cities")
+                }
+            }
+            FloatingActionButton(
+                onClick = {
+                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)
+                        == PackageManager.PERMISSION_GRANTED
+                    ) {
+                        getAndMoveToLocation()
+                    } else {
+                        locationPermLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+                    }
+                },
+                containerColor = MaterialTheme.colorScheme.surface,
+                contentColor = MaterialTheme.colorScheme.primary,
+            ) {
+                Icon(Icons.Filled.MyLocation, "My location")
+            }
+        }
+
+        // Bottom info panel — pinned to the screen's bottom edge and sized to its
+        // content (it grows when a dropped-pin or selected-spot card appears). A plain
+        // anchored panel rather than a draggable sheet, so there's no peek/expand
+        // affordance suggesting you can pull it up.
+        Surface(
+            modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth(),
+            shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+            tonalElevation = 4.dp,
+            shadowElevation = 12.dp,
+        ) {
             Column(
                 Modifier.fillMaxWidth()
                     .padding(horizontal = 16.dp)
-                    .padding(bottom = 8.dp)
+                    .padding(top = 14.dp, bottom = 8.dp)
                     .navigationBarsPadding()
             ) {
                 // Dropped pin / selected spot card (shown when relevant)
@@ -230,196 +399,6 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
                         )
                     }
-                }
-            }
-        },
-    ) { _ ->
-        // Map fills the whole screen regardless of sheet scaffold padding
-        Box(Modifier.fillMaxSize()) {
-            ShadeyMapLayer(state, vm)
-
-            // Search overlay (when active, replaces the title pill)
-            if (searchActive) {
-                Surface(
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .statusBarsPadding()
-                        .padding(horizontal = 8.dp, vertical = 8.dp)
-                        .fillMaxWidth(),
-                    shape = RoundedCornerShape(28.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    tonalElevation = 4.dp,
-                    shadowElevation = 4.dp,
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (searchBusy) {
-                            CircularProgressIndicator(
-                                Modifier.padding(start = 14.dp).size(20.dp),
-                                strokeWidth = 2.dp,
-                            )
-                        } else {
-                            Icon(
-                                Icons.Filled.Search,
-                                null,
-                                Modifier.padding(start = 14.dp).size(20.dp),
-                                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                            )
-                        }
-                        TextField(
-                            value = searchQuery,
-                            onValueChange = { searchQuery = it },
-                            singleLine = true,
-                            placeholder = { Text("Search places…") },
-                            modifier = Modifier.weight(1f),
-                            colors = TextFieldDefaults.colors(
-                                focusedContainerColor = Color.Transparent,
-                                unfocusedContainerColor = Color.Transparent,
-                                focusedIndicatorColor = Color.Transparent,
-                                unfocusedIndicatorColor = Color.Transparent,
-                            ),
-                        )
-                        IconButton(onClick = {
-                            searchActive = false
-                            searchQuery = ""
-                            searchResults = emptyList()
-                        }) { Icon(Icons.Filled.Close, "Close search") }
-                    }
-                }
-
-                // Search results card
-                if (searchResults.isNotEmpty()) {
-                    Card(
-                        modifier = Modifier
-                            .align(Alignment.TopCenter)
-                            .statusBarsPadding()
-                            .padding(top = 68.dp)
-                            .padding(horizontal = 8.dp)
-                            .fillMaxWidth(),
-                        shape = RoundedCornerShape(16.dp),
-                    ) {
-                        Column {
-                            searchResults.take(6).forEachIndexed { idx, hit ->
-                                val parts = hit.name.split(", ")
-                                val title = parts.first()
-                                val subtitle = parts.drop(1).joinToString(", ")
-                                Row(
-                                    Modifier.fillMaxWidth()
-                                        .clickable {
-                                            vm.goToPlace(hit)
-                                            searchActive = false
-                                            searchQuery = ""
-                                            searchResults = emptyList()
-                                        }
-                                        .padding(horizontal = 16.dp, vertical = 11.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Icon(
-                                        Icons.Filled.Search,
-                                        null,
-                                        Modifier.size(16.dp),
-                                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
-                                    )
-                                    Spacer(Modifier.width(12.dp))
-                                    Column(Modifier.weight(1f)) {
-                                        Text(title, style = MaterialTheme.typography.bodyMedium)
-                                        if (subtitle.isNotEmpty()) {
-                                            Text(
-                                                subtitle,
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
-                                                maxLines = 1,
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                // Normal title pill
-                Surface(
-                    modifier = Modifier.align(Alignment.TopStart).statusBarsPadding().padding(12.dp),
-                    shape = RoundedCornerShape(24.dp),
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
-                    tonalElevation = 3.dp,
-                    shadowElevation = 3.dp,
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                    ) {
-                        Icon(
-                            Icons.Filled.WbSunny,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Column {
-                            Text("Shadey", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                            Text(
-                                state.sourceLabel,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                            )
-                        }
-                        if (state.busy) {
-                            Spacer(Modifier.width(8.dp))
-                            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                        }
-                    }
-                }
-            }
-
-            // Top-right button column
-            Column(
-                modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                if (!searchActive) {
-                    Surface(
-                        shape = CircleShape,
-                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
-                        tonalElevation = 3.dp, shadowElevation = 3.dp,
-                    ) {
-                        IconButton(onClick = { searchActive = true }) {
-                            Icon(Icons.Filled.Search, "Search")
-                        }
-                    }
-                }
-                Surface(
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
-                    tonalElevation = 3.dp, shadowElevation = 3.dp,
-                ) {
-                    IconButton(onClick = { showSettings = true }) {
-                        Icon(Icons.Filled.Settings, "Settings")
-                    }
-                }
-                Surface(
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
-                    tonalElevation = 3.dp, shadowElevation = 3.dp,
-                ) {
-                    IconButton(onClick = { showCities = true }) {
-                        Icon(Icons.Filled.Public, "Cities")
-                    }
-                }
-                FloatingActionButton(
-                    onClick = {
-                        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)
-                            == PackageManager.PERMISSION_GRANTED
-                        ) {
-                            getAndMoveToLocation()
-                        } else {
-                            locationPermLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
-                        }
-                    },
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    contentColor = MaterialTheme.colorScheme.primary,
-                ) {
-                    Icon(Icons.Filled.MyLocation, "My location")
                 }
             }
         }

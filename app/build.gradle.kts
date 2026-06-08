@@ -20,6 +20,19 @@ android {
         vectorDrawables { useSupportLibrary = true }
     }
 
+    signingConfigs {
+        // A fixed, committed debug keystore (not secret — it only ever signs debug
+        // builds). Without this, AGP auto-generates a different random debug key on
+        // every machine and CI run, so each new debug APK fails to install over an
+        // existing one with "App not installed" (signature mismatch).
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false

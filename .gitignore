@@ -18,6 +18,9 @@ local.properties
 *.aab
 *.keystore
 *.jks
+# Except the committed debug-signing keystore (keeps debug builds update-compatible
+# across machines/CI runs — see app/build.gradle.kts signingConfigs.debug)
+!/app/debug.keystore
 
 # Native
 .externalNativeBuild

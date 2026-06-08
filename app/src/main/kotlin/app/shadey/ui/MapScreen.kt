@@ -67,6 +67,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -646,6 +647,7 @@ private fun SelectedCard(info: SpotSunInfo, zone: ZoneId, onRemove: () -> Unit, 
 
 @Composable
 private fun SettingsDialog(onDismiss: () -> Unit) {
+    val uriHandler = LocalUriHandler.current
     AlertDialog(
         onDismissRequest = onDismiss,
         confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
@@ -663,8 +665,27 @@ private fun SettingsDialog(onDismiss: () -> Unit) {
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                 )
+                Spacer(Modifier.height(16.dp))
+                Text("About", style = MaterialTheme.typography.labelLarge)
+                Spacer(Modifier.height(4.dp))
+                Text("Made by phrag", style = MaterialTheme.typography.bodyMedium)
+                LinkRow("Email: phrag@duck.com") { uriHandler.openUri("mailto:phrag@duck.com") }
+                LinkRow("GitHub: github.com/phrag") { uriHandler.openUri("https://github.com/phrag") }
+                LinkRow("Project: github.com/phrag/shadey") {
+                    uriHandler.openUri("https://github.com/phrag/shadey")
+                }
             }
         },
+    )
+}
+
+@Composable
+private fun LinkRow(label: String, onClick: () -> Unit) {
+    Text(
+        label,
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.clickable(onClick = onClick),
     )
 }
 

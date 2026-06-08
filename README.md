@@ -129,6 +129,10 @@ A few things worth being explicit about:
   or personal data is attached.
 - City downloads only ever contact the two community Overpass mirrors above
   (`overpass.kumi.systems` is tried only if `overpass-api.de` is unreachable).
+- A Settings switch — **"Use network for search & downloads"** — turns the
+  place-search (Nominatim) and city-download (Overpass) requests off entirely.
+  The base map still loads when you're online; this switch controls building and
+  search data only, not the map tiles.
 
 ### Offline mode
 

@@ -48,6 +48,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
@@ -109,9 +110,10 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
         }
     }
 
-    // Debounced search-as-you-type, biased toward the current map viewport
-    LaunchedEffect(searchQuery) {
-        if (searchQuery.length >= 2) {
+    // Debounced search-as-you-type, biased toward the current map viewport. Skipped entirely
+    // when network data is off, so no Nominatim request is made.
+    LaunchedEffect(searchQuery, state.allowRoaming) {
+        if (searchQuery.length >= 2 && state.allowRoaming) {
             delay(400)
             searchBusy = true
             val viewbox = vm.mapViewbox()
@@ -423,7 +425,11 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
         }
     }
 
-    if (showSettings) SettingsDialog(onDismiss = { showSettings = false })
+    if (showSettings) SettingsDialog(
+        allowRoaming = state.allowRoaming,
+        onSetRoaming = vm::setAllowRoaming,
+        onDismiss = { showSettings = false },
+    )
     if (showCities) CitiesDialog(state, vm, onDismiss = { showCities = false })
     if (showSpots) SpotsDialog(state, vm, zone, onDismiss = { showSpots = false })
 }
@@ -487,6 +493,15 @@ private fun CitiesDialog(state: ShadeyUiState, vm: ShadeyViewModel, onDismiss: (
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                 )
+                if (!state.allowRoaming) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Network data is off. Turn on “Use network for search & downloads” in " +
+                            "Settings to search and download cities.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
                 Spacer(Modifier.height(10.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     OutlinedTextField(
@@ -495,9 +510,13 @@ private fun CitiesDialog(state: ShadeyUiState, vm: ShadeyViewModel, onDismiss: (
                         singleLine = true,
                         placeholder = { Text("Search a city") },
                         modifier = Modifier.weight(1f),
+                        enabled = state.allowRoaming,
                     )
                     Spacer(Modifier.width(8.dp))
-                    Button(onClick = { vm.searchCities(query) }, enabled = !state.cityBusy && query.isNotBlank()) {
+                    Button(
+                        onClick = { vm.searchCities(query) },
+                        enabled = !state.cityBusy && query.isNotBlank() && state.allowRoaming,
+                    ) {
                         Icon(Icons.Filled.Search, "Search")
                     }
                 }
@@ -520,7 +539,7 @@ private fun CitiesDialog(state: ShadeyUiState, vm: ShadeyViewModel, onDismiss: (
                     state.citySearch.forEach { hit ->
                         Row(
                             Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
-                                .clickable(enabled = !state.cityBusy) { vm.downloadCity(hit) }
+                                .clickable(enabled = !state.cityBusy && state.allowRoaming) { vm.downloadCity(hit) }
                                 .padding(vertical = 10.dp, horizontal = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
@@ -660,7 +679,11 @@ private fun SelectedCard(info: SpotSunInfo, zone: ZoneId, onRemove: () -> Unit, 
 }
 
 @Composable
-private fun SettingsDialog(onDismiss: () -> Unit) {
+private fun SettingsDialog(
+    allowRoaming: Boolean,
+    onSetRoaming: (Boolean) -> Unit,
+    onDismiss: () -> Unit,
+) {
     val uriHandler = LocalUriHandler.current
     val context = LocalContext.current
     val versionName = remember {
@@ -685,6 +708,24 @@ private fun SettingsDialog(onDismiss: () -> Unit) {
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                 )
+                Spacer(Modifier.height(16.dp))
+                Text("Privacy", style = MaterialTheme.typography.labelLarge)
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "Use network for search & downloads",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Text(
+                            "Lets Shadey search places and download cities. The base map still loads either way.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Switch(checked = allowRoaming, onCheckedChange = onSetRoaming)
+                }
                 Spacer(Modifier.height(16.dp))
                 Text("About", style = MaterialTheme.typography.labelLarge)
                 Spacer(Modifier.height(4.dp))

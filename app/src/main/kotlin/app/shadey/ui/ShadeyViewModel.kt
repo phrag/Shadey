@@ -60,6 +60,11 @@ data class ShadeyUiState(
     val cachedCities: List<CachedCity> = emptyList(),
     val cityBusy: Boolean = false,
     val cityStatus: String? = null,
+    /**
+     * Whether Shadey may use the network for place search and city downloads. The base map
+     * always loads regardless — this only gates the Nominatim/Overpass requests.
+     */
+    val allowRoaming: Boolean = true,
     /** True when there's no usable building data yet, so the UI should prompt for a city. */
     val promptCity: Boolean = false,
 ) {
@@ -145,6 +150,9 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                 userSpots = it
                 recompute(rank = true)
             }
+        }
+        viewModelScope.launch {
+            store.allowRoaming.collect { allow -> _state.update { it.copy(allowRoaming = allow) } }
         }
     }
 
@@ -295,6 +303,10 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Search OpenStreetMap for a city/place to download. */
     fun searchCities(query: String) {
+        if (!_state.value.allowRoaming) {
+            _state.update { it.copy(cityStatus = "Network data is off — enable it in Settings to search.") }
+            return
+        }
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
             _state.update { it.copy(cityBusy = true, cityStatus = null) }
@@ -310,8 +322,17 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
 
     fun dismissCityPrompt() = _state.update { it.copy(promptCity = false) }
 
+    /** Toggle whether the network may be used for place search + city downloads. */
+    fun setAllowRoaming(value: Boolean) {
+        viewModelScope.launch { store.setAllowRoaming(value) }
+    }
+
     /** Download a searched city's buildings, cache them, and switch to it. */
     fun downloadCity(hit: CityHit) {
+        if (!_state.value.allowRoaming) {
+            _state.update { it.copy(cityStatus = "Network data is off — enable it in Settings to download.") }
+            return
+        }
         viewModelScope.launch {
             _state.update { it.copy(cityBusy = true, cityStatus = "Downloading ${hit.name}…") }
             try {

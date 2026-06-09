@@ -1,6 +1,8 @@
 package app.shadey.data
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -144,13 +146,13 @@ object BuildingDownloader {
                             isCancelled = { !isActive },
                             onProgress = { bytes -> onStatus("Downloading… ${formatMB(bytes)}") },
                         )
-                        if (!isActive) throw kotlinx.coroutines.CancellationException("Cancelled")
+                        if (!isActive) throw CancellationException("Cancelled")
                         if (ok) {
                             onStatus("Processing buildings…")
                             overpassFileToGeoJson(tmpFile, geoJsonFile)
                             return@withContext geoJsonFile.readText()
                         }
-                    } catch (ex: kotlinx.coroutines.CancellationException) {
+                    } catch (ex: CancellationException) {
                         throw ex
                     } catch (ex: Exception) {
                         lastErr = ex

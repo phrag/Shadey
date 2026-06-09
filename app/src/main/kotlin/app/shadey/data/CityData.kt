@@ -110,8 +110,11 @@ object BuildingDownloader {
      * The Overpass response for a large city can be 50–70 MB of JSON. Loading it into a
      * String would OOM on devices with a 256 MB heap limit. Instead we:
      *   1. Stream the HTTP response body to a temp file (8 KB chunks, no large in-memory copy).
-     *   2. Stream-parse the temp file with JsonReader so we never hold the whole blob in RAM.
-     *   3. Delete the temp file immediately after parsing.
+     *   2. Stream-parse the raw Overpass file with JsonReader, writing each GeoJSON feature
+     *      immediately to a second temp file — so peak heap is one feature at a time, not the
+     *      full city.
+     *   3. Read the finished GeoJSON file once (it fits because it is already the trimmed output).
+     *   4. Delete both temp files immediately after.
      */
     suspend fun downloadGeoJson(bbox: DoubleArray): String = withContext(Dispatchers.IO) {
         val (s, w, n, e) = bbox
@@ -130,13 +133,15 @@ object BuildingDownloader {
         """.trimIndent()
         val postData = "data=" + URLEncoder.encode(query, "UTF-8")
         val tmpFile = File.createTempFile("overpass", ".json")
+        val geoJsonFile = File.createTempFile("overpass_geo", ".geojson")
         try {
             var lastErr: Exception? = null
             for (url in ENDPOINTS) {
                 repeat(2) { attempt ->
                     try {
                         if (httpPostToFile(url, postData, tmpFile)) {
-                            return@withContext overpassFileToGeoJson(tmpFile)
+                            overpassFileToGeoJson(tmpFile, geoJsonFile)
+                            return@withContext geoJsonFile.readText()
                         }
                     } catch (ex: Exception) {
                         lastErr = ex
@@ -147,6 +152,7 @@ object BuildingDownloader {
             throw IOException("Could not reach OpenStreetMap: ${lastErr?.message ?: "unknown error"}")
         } finally {
             tmpFile.delete()
+            geoJsonFile.delete()
         }
     }
 
@@ -170,29 +176,36 @@ object BuildingDownloader {
     }
 
     /**
-     * Stream-parse an Overpass JSON file using [android.util.JsonReader].
-     * Reads one element at a time so peak memory is proportional to a single building, not
-     * the full response.
+     * Stream-parse [source] (raw Overpass JSON) writing a GeoJSON FeatureCollection to [dest].
+     *
+     * Each feature JSONObject is stringified and written immediately so it can be GC'd — peak
+     * heap is proportional to one feature, not the whole city. This avoids the OOM crash that
+     * occurred when accumulating all features in a JSONArray before calling toString().
      */
-    private fun overpassFileToGeoJson(file: File): String {
-        val features = JSONArray()
-        android.util.JsonReader(java.io.InputStreamReader(file.inputStream(), "UTF-8")).use { r ->
-            r.beginObject()
-            while (r.hasNext()) {
-                if (r.nextName() == "elements") {
-                    r.beginArray()
-                    while (r.hasNext()) parseElement(r)?.let { features.put(it) }
-                    r.endArray()
-                } else {
-                    r.skipValue()
+    private fun overpassFileToGeoJson(source: File, dest: File) {
+        dest.bufferedWriter(Charsets.UTF_8).use { w ->
+            w.write("""{"type":"FeatureCollection","attribution":"(c) OpenStreetMap contributors, ODbL","features":[""")
+            var first = true
+            android.util.JsonReader(java.io.InputStreamReader(source.inputStream(), "UTF-8")).use { r ->
+                r.beginObject()
+                while (r.hasNext()) {
+                    if (r.nextName() == "elements") {
+                        r.beginArray()
+                        while (r.hasNext()) {
+                            parseElement(r)?.let { feature ->
+                                if (!first) w.write(",")
+                                w.write(feature.toString())
+                                first = false
+                            }
+                        }
+                        r.endArray()
+                    } else {
+                        r.skipValue()
+                    }
                 }
             }
+            w.write("]}")
         }
-        return JSONObject()
-            .put("type", "FeatureCollection")
-            .put("attribution", "(c) OpenStreetMap contributors, ODbL")
-            .put("features", features)
-            .toString()
     }
 
     private fun parseElement(r: android.util.JsonReader): JSONObject? {

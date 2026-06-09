@@ -74,6 +74,10 @@ data class ShadeyUiState(
     val treeShade: Boolean = false,
     /** True while treeShade is on but the current city has no tree data (needs re-download). */
     val treeShadeNoData: Boolean = false,
+    /** Non-empty when the active city has trees loaded, e.g. "4 521 trees". */
+    val treeCountLabel: String = "",
+    /** True when the user just toggled tree shade on but there is no tree data — opens the Cities dialog. */
+    val promptTreeDownload: Boolean = false,
     /** True when there's no usable building data yet, so the UI should prompt for a city. */
     val promptCity: Boolean = false,
 ) {
@@ -360,6 +364,8 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
 
     fun dismissCityPrompt() = _state.update { it.copy(promptCity = false) }
 
+    fun dismissTreeDownloadPrompt() = _state.update { it.copy(promptTreeDownload = false) }
+
     /** Toggle whether the network may be used for place search + city downloads. */
     fun setAllowRoaming(value: Boolean) {
         viewModelScope.launch { store.setAllowRoaming(value) }
@@ -367,12 +373,23 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Toggle whether tree canopies (when known) cast shade alongside buildings. */
     fun setTreeShade(value: Boolean) {
-        _state.update { it.copy(treeShade = value, treeShadeNoData = if (!value) false else _state.value.treeShadeNoData) }
+        _state.update {
+            it.copy(
+                treeShade = value,
+                treeShadeNoData = if (!value) false else it.treeShadeNoData,
+                treeCountLabel = if (!value) "" else it.treeCountLabel,
+            )
+        }
         viewModelScope.launch {
             store.setTreeShade(value)
-            if (value && activeTreeCanopies.isEmpty()) loadTreesForActiveCity()
+            if (value && activeTreeCanopies.isEmpty()) loadTreesForActiveCity(showPrompt = true)
         }
         recompute(rank = true)
+    }
+
+    /** Re-download a city whose data is already cached (e.g. to get a newer dataset with trees). */
+    fun redownloadCity(city: app.shadey.data.CachedCity) {
+        downloadCity(CityHit(city.name, city.lat, city.lng, city.south, city.west, city.north, city.east))
     }
 
     /** Download a searched city's buildings, cache them, and switch to it. */
@@ -436,6 +453,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                 sourceLabel = "${city.name} · ${buildings.size} buildings",
                 cameraTarget = center,
                 treeShadeNoData = false,
+                treeCountLabel = "",
             )
         }
         // Tree canopies are loaded lazily when the toggle is on — avoids a second full GeoJSON
@@ -448,21 +466,36 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * Loads tree canopies for the currently-active downloaded city from its cached GeoJSON.
-     * Sets [ShadeyUiState.treeShadeNoData] if the city pre-dates tree data or has no trees,
-     * triggering the UI prompt to re-download. No-ops if no city is active (bundled Berlin).
+     * Sets [ShadeyUiState.treeShadeNoData] if the city pre-dates tree data or has no trees.
+     * When [showPrompt] is true (only for explicit user toggle) also sets
+     * [ShadeyUiState.promptTreeDownload] to auto-open the Cities dialog.
+     * No-ops if no city is active (bundled Berlin).
      */
-    private suspend fun loadTreesForActiveCity() {
+    private suspend fun loadTreesForActiveCity(showPrompt: Boolean = false) {
         val slug = activeCitySlug ?: run {
-            // Bundled data — no tree dataset available at all.
-            if (_state.value.treeShade) _state.update { it.copy(treeShadeNoData = true) }
+            if (_state.value.treeShade) _state.update {
+                it.copy(treeShadeNoData = true, promptTreeDownload = showPrompt)
+            }
             return
         }
-        val geoJson = withContext(Dispatchers.IO) { cityStore.geoJsonOf(slug) } ?: return
+        val geoJson = withContext(Dispatchers.IO) { cityStore.geoJsonOf(slug) } ?: run {
+            if (_state.value.treeShade) _state.update {
+                it.copy(treeShadeNoData = true, promptTreeDownload = showPrompt)
+            }
+            return
+        }
         val canopies = withContext(Dispatchers.Default) {
             GeoJsonTrees.parse(geoJson).take(MAX_TREES).map { it.canopy() }
         }
         activeTreeCanopies = canopies
-        _state.update { it.copy(treeShadeNoData = canopies.isEmpty() && it.treeShade) }
+        val noData = canopies.isEmpty() && _state.value.treeShade
+        _state.update {
+            it.copy(
+                treeShadeNoData = noData,
+                promptTreeDownload = if (noData) showPrompt else false,
+                treeCountLabel = if (canopies.isNotEmpty()) "${canopies.size} trees" else "",
+            )
+        }
         if (canopies.isNotEmpty()) recompute(rank = true)
     }
 

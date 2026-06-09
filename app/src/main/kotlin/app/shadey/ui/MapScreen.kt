@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -96,6 +97,9 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
 
     LaunchedEffect(state.promptCity) {
         if (state.promptCity) { showCities = true; vm.dismissCityPrompt() }
+    }
+    LaunchedEffect(state.promptTreeDownload) {
+        if (state.promptTreeDownload) { showCities = true; vm.dismissTreeDownloadPrompt() }
     }
 
     // Debounced search-as-you-type, biased toward the current map viewport. Skipped entirely
@@ -252,6 +256,13 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                         )
+                        if (state.treeCountLabel.isNotEmpty()) {
+                            Text(
+                                state.treeCountLabel,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
+                            )
+                        }
                     }
                     if (state.busy) {
                         Spacer(Modifier.width(8.dp))
@@ -471,7 +482,8 @@ private fun CitiesDialog(state: ShadeyUiState, vm: ShadeyViewModel, onDismiss: (
         text = {
             Column {
                 Text(
-                    "Download a city's buildings once — it then works offline and instantly.",
+                    "Download a city's buildings once — it then works offline and instantly. " +
+                        "The download also includes tree locations for the tree-shade feature.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                 )
@@ -541,13 +553,29 @@ private fun CitiesDialog(state: ShadeyUiState, vm: ShadeyViewModel, onDismiss: (
                     state.cachedCities.forEach { c ->
                         Row(
                             Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
-                                .clickable { vm.useCity(c.slug); onDismiss() }
-                                .padding(vertical = 10.dp, horizontal = 4.dp),
+                                .clickable(enabled = !state.cityBusy) { vm.useCity(c.slug); onDismiss() }
+                                .padding(vertical = 4.dp, horizontal = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(c.name, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-                            Text("${c.buildingCount}", style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                            Column(Modifier.weight(1f)) {
+                                Text(c.name, style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    "${c.buildingCount} buildings",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                                )
+                            }
+                            IconButton(
+                                onClick = { vm.redownloadCity(c) },
+                                enabled = !state.cityBusy && state.allowRoaming,
+                            ) {
+                                Icon(
+                                    Icons.Filled.Refresh,
+                                    contentDescription = "Re-download",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
                         }
                     }
                 }

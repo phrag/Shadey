@@ -116,7 +116,7 @@ object BuildingDownloader {
      *   3. Read the finished GeoJSON file once (it fits because it is already the trimmed output).
      *   4. Delete both temp files immediately after.
      */
-    suspend fun downloadGeoJson(bbox: DoubleArray): String = withContext(Dispatchers.IO) {
+    suspend fun downloadGeoJson(bbox: DoubleArray, onStatus: (String) -> Unit = {}): String = withContext(Dispatchers.IO) {
         val (s, w, n, e) = bbox
         // Trees come along for the ride so the cached city is ready for tree-shade the moment
         // it's switched on — no separate download/toggle gating to keep track of. Individual
@@ -139,10 +139,19 @@ object BuildingDownloader {
             for (url in ENDPOINTS) {
                 repeat(2) { attempt ->
                     try {
-                        if (httpPostToFile(url, postData, tmpFile)) {
+                        val ok = httpPostToFile(
+                            url, postData, tmpFile,
+                            isCancelled = { !isActive },
+                            onProgress = { bytes -> onStatus("Downloading… ${formatMB(bytes)}") },
+                        )
+                        if (!isActive) throw kotlinx.coroutines.CancellationException("Cancelled")
+                        if (ok) {
+                            onStatus("Processing buildings…")
                             overpassFileToGeoJson(tmpFile, geoJsonFile)
                             return@withContext geoJsonFile.readText()
                         }
+                    } catch (ex: kotlinx.coroutines.CancellationException) {
+                        throw ex
                     } catch (ex: Exception) {
                         lastErr = ex
                     }
@@ -156,8 +165,14 @@ object BuildingDownloader {
         }
     }
 
-    /** POST [postBody] to [url], streaming the response body into [dest]. Returns false on non-2xx. */
-    private fun httpPostToFile(url: String, postBody: String, dest: File): Boolean {
+    /** POST [postBody] to [url], streaming the response body into [dest]. Returns false on non-2xx or cancellation. */
+    private fun httpPostToFile(
+        url: String,
+        postBody: String,
+        dest: File,
+        isCancelled: () -> Boolean = { false },
+        onProgress: (bytesWritten: Long) -> Unit = {},
+    ): Boolean {
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 30_000
             readTimeout = 120_000
@@ -168,12 +183,27 @@ object BuildingDownloader {
         }
         return try {
             conn.outputStream.use { it.write(postBody.toByteArray()) }
-            if (conn.responseCode !in 200..299) false
-            else { conn.inputStream.use { inp -> dest.outputStream().use { inp.copyTo(it) } }; true }
+            if (conn.responseCode !in 200..299) return false
+            conn.inputStream.use { inp ->
+                dest.outputStream().use { out ->
+                    val buf = ByteArray(8_192)
+                    var total = 0L
+                    var n: Int
+                    while (inp.read(buf).also { n = it } != -1) {
+                        if (isCancelled()) return false
+                        out.write(buf, 0, n)
+                        total += n
+                        onProgress(total)
+                    }
+                }
+            }
+            true
         } finally {
             conn.disconnect()
         }
     }
+
+    private fun formatMB(bytes: Long) = "%.1f MB".format(bytes.toDouble() / 1_048_576)
 
     /**
      * Stream-parse [source] (raw Overpass JSON) writing a GeoJSON FeatureCollection to [dest].
@@ -244,6 +274,7 @@ object BuildingDownloader {
 
     private fun readRing(r: android.util.JsonReader): JSONArray? {
         val ring = JSONArray()
+        var oversized = false
         r.beginArray()
         while (r.hasNext()) {
             var lat = Double.NaN; var lon = Double.NaN
@@ -256,10 +287,17 @@ object BuildingDownloader {
                 }
             }
             r.endObject()
-            if (!lat.isNaN() && !lon.isNaN()) ring.put(JSONArray().put(lon).put(lat))
+            if (!lat.isNaN() && !lon.isNaN() && !oversized) {
+                ring.put(JSONArray().put(lon).put(lat))
+                // A single ring with > MAX_RING_POINTS vertices can produce a JSONObject
+                // whose toString() exceeds the heap limit (e.g. an OSM administrative
+                // boundary tagged as a building). Drain the rest of the ring from the
+                // reader and discard this feature rather than OOM.
+                if (ring.length() >= MAX_RING_POINTS) oversized = true
+            }
         }
         r.endArray()
-        return if (ring.length() >= 4) ring else null
+        return if (!oversized && ring.length() >= 4) ring else null
     }
 
     private fun readOuters(r: android.util.JsonReader, out: JSONArray) {
@@ -275,7 +313,7 @@ object BuildingDownloader {
                 }
             }
             r.endObject()
-            if (role == "outer") ring?.let { out.put(it) }
+            if (role == "outer" && ring != null && out.length() < MAX_OUTER_RINGS) out.put(ring)
         }
         r.endArray()
     }
@@ -326,6 +364,14 @@ object BuildingDownloader {
     private fun polygon(ring: JSONArray): JSONObject =
         JSONObject().put("type", "Polygon").put("coordinates", JSONArray().put(ring))
 
+    private companion object {
+        /** Rings with more vertices than this are likely OSM admin boundaries mislabelled as
+         *  buildings. Calling toString() on a JSONObject with 500k+ coordinates allocates a
+         *  String large enough to OOM a 256 MB heap — skip those features instead. */
+        const val MAX_RING_POINTS = 5_000
+        /** Cap multipolygon outer rings to bound the per-feature JSON size. */
+        const val MAX_OUTER_RINGS = 50
+    }
 }
 
 /** Persists downloaded city building data in the app's private files dir. */

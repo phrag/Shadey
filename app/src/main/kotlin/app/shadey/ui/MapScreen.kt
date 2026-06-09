@@ -520,7 +520,12 @@ private fun CitiesDialog(state: ShadeyUiState, vm: ShadeyViewModel, onDismiss: (
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                         Spacer(Modifier.width(8.dp))
-                        Text(state.cityStatus ?: "Working…", style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            state.cityStatus ?: "Working…",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(onClick = vm::cancelDownload) { Text("Cancel") }
                     }
                 } else state.cityStatus?.let {
                     Spacer(Modifier.height(8.dp))

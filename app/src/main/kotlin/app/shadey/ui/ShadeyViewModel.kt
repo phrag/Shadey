@@ -89,6 +89,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     private val store = SavedSpotsStore(app)
     private val cityStore = CityStore(app.filesDir)
     private var searchJob: Job? = null
+    private var downloadJob: Job? = null
     private val engine = ShadowEngine()
     private val ranker = SpotRanker(engine)
     private val zone: ZoneId = ZoneId.systemDefault()
@@ -392,17 +393,27 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         downloadCity(CityHit(city.name, city.lat, city.lng, city.south, city.west, city.north, city.east))
     }
 
+    /** Cancel any in-progress city download. */
+    fun cancelDownload() {
+        downloadJob?.cancel()
+        downloadJob = null
+        _state.update { it.copy(cityBusy = false, cityStatus = null) }
+    }
+
     /** Download a searched city's buildings, cache them, and switch to it. */
     fun downloadCity(hit: CityHit) {
         if (!_state.value.allowRoaming) {
             _state.update { it.copy(cityStatus = "Network data is off — enable it in Settings to download.") }
             return
         }
-        viewModelScope.launch {
-            _state.update { it.copy(cityBusy = true, cityStatus = "Downloading ${hit.name}…") }
+        downloadJob = viewModelScope.launch {
+            _state.update { it.copy(cityBusy = true, cityStatus = "${hit.name} — connecting…") }
             try {
                 val bbox = BuildingDownloader.clampedBbox(hit)
-                val geoJson = BuildingDownloader.downloadGeoJson(bbox)
+                val geoJson = BuildingDownloader.downloadGeoJson(bbox) { status ->
+                    _state.update { it.copy(cityStatus = "${hit.name} — $status") }
+                }
+                _state.update { it.copy(cityStatus = "${hit.name} — loading…") }
                 val buildings = withContext(Dispatchers.Default) { GeoJsonBuildings.parse(geoJson) }
                 if (buildings.isEmpty()) {
                     _state.update { it.copy(cityBusy = false, cityStatus = "No buildings found there") }
@@ -418,6 +429,8 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                     it.copy(cityBusy = false, cityStatus = null, citySearch = emptyList(),
                         cachedCities = updated)
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e // let coroutine machinery handle it; state already reset by cancelDownload()
             } catch (e: Exception) {
                 _state.update { it.copy(cityBusy = false, cityStatus = e.message ?: "Download failed") }
             }

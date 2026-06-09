@@ -6,8 +6,8 @@
 
 **Find the sun.** Shadey shows whether a spot — a café terrace, a park bench, a
 canal bank — is in **sunlight or shade** right now (or at any time of day),
-computed from real **building shadows**. It's an English, Berlin-first,
-fully-private take on [jveuxdusoleil.fr](https://jveuxdusoleil.fr/).
+computed from real **building shadows**. It's English, Berlin-first, and
+fully private.
 
 - 🔒 **Private & offline by default.** Berlin's building data and the sun/shade
   maths run **entirely on your device**. No accounts, no tracking, no servers.
@@ -18,7 +18,7 @@ fully-private take on [jveuxdusoleil.fr](https://jveuxdusoleil.fr/).
 - 📍 **Add spots easily.** Tap anywhere to check a point; save your own spots.
 - 🌍 **Travels with you.** Outside Berlin, *opt in* to fetch building data from
   OpenStreetMap on demand (cached locally). Berlin itself never touches the network.
-- 🆓 **100% FOSS.** Kotlin, Jetpack Compose, MapLibre, OpenStreetMap. MIT-licensed code.
+- 🆓 **100% FOSS.** Kotlin, Jetpack Compose, MapLibre, OpenStreetMap. GPL-3.0-licensed code.
 
 > **Status:** the on-device engine is complete and unit-tested (22 tests). The
 > Android UI is implemented and builds via CI (this dev container has no Android
@@ -114,7 +114,16 @@ Permissions requested:
 
 ## License & attribution
 
-- Code: **MIT** (see `LICENSE`).
+- Code: **GPL-3.0** (see `LICENSE`). Shadey is free software: you may use,
+  study, share, and modify it, but any distributed version must also be
+  released under the GPL — so it can't be turned into a closed-source product.
 - Map & building data: **© OpenStreetMap contributors, ODbL**
   (https://www.openstreetmap.org/copyright).
 - Maps rendered with **MapLibre GL** (BSD-2-Clause).
+
+## Acknowledgements
+
+Shadey was inspired by [jveuxdusoleil.fr](https://jveuxdusoleil.fr/), a French
+sun-finding app for France. Shadey is an independent project with its own code,
+built English-first and Berlin-first, and is not affiliated with or derived from
+that app.

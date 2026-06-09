@@ -3,7 +3,6 @@ package app.shadey.core.rank
 import app.shadey.core.geo.LocalProjection
 import app.shadey.core.model.Building
 import app.shadey.core.model.LatLng
-import app.shadey.core.model.SolarPosition
 import app.shadey.core.model.Spot
 import app.shadey.core.model.Sunlight
 import app.shadey.core.shade.ShadowEngine
@@ -14,18 +13,17 @@ import java.time.Instant
 data class SpotSunInfo(
     val spot: Spot,
     val sunlight: Sunlight,
-    val solar: SolarPosition,
+    val solar: app.shadey.core.model.SolarPosition,
     /** When the sunlight state next changes, if known within the look-ahead window. */
     val nextChange: Instant?,
 )
 
 /**
  * Evaluates and ranks spots by proximity to a reference point and how sunny they are
- * right now. Spots near [origin] (typically the centre of the map view) come first —
- * among those, sunny spots lead (the ones that will *stay* sunny longest first), then
- * shaded spots that will become sunny soonest, then night. Spots far from [origin] are
- * ordered the same way among themselves, but always sort below the nearby ones, so a
- * sunny spot across town can no longer outrank what's actually in view.
+ * right now. Spots near [origin] (within [NEAR_RADIUS_METERS]) come before far-away ones.
+ * Within that constraint the ordering is: sunny first, shaded second, night last. Among
+ * spots with the same near/far status AND the same sun state, the closer spot ranks higher
+ * so panning the map visibly reorders the list even when all spots share the near bucket.
  */
 class SpotRanker(private val engine: ShadowEngine = ShadowEngine()) {
 
@@ -41,31 +39,30 @@ class SpotRanker(private val engine: ShadowEngine = ShadowEngine()) {
         instant: Instant,
         origin: LatLng,
         buildingsFor: (Spot) -> List<Building>,
-    ): List<SpotSunInfo> =
-        spots.map { evaluate(it, instant, buildingsFor(it)) }.sortedWith(ordering(instant, origin))
-
-    private fun ordering(now: Instant, origin: LatLng): Comparator<SpotSunInfo> {
+    ): List<SpotSunInfo> {
         val projection = LocalProjection(origin)
-        return Comparator { a, b ->
-            val da = distanceBucket(a.spot, projection)
-            val db = distanceBucket(b.spot, projection)
-            if (da != db) return@Comparator da - db
-            val ra = rankBucket(a)
-            val rb = rankBucket(b)
-            if (ra != rb) return@Comparator ra - rb
-            when (ra) {
-                // Sunny: prefer the spot that stays sunny longest.
-                0 -> secondsUntil(b.nextChange, now).compareTo(secondsUntil(a.nextChange, now))
-                // Shaded: prefer the spot that becomes sunny soonest.
-                1 -> secondsUntil(a.nextChange, now).compareTo(secondsUntil(b.nextChange, now))
-                else -> b.solar.elevationDeg.compareTo(a.solar.elevationDeg)
+        return spots
+            .map { spot -> evaluate(spot, instant, buildingsFor(spot)) to projection.toLocal(spot.latLng).length() }
+            .sortedWith { (a, da), (b, db) ->
+                // 1. Near before far.
+                val ba = if (da <= NEAR_RADIUS_METERS) 0 else 1
+                val bb = if (db <= NEAR_RADIUS_METERS) 0 else 1
+                if (ba != bb) return@sortedWith ba - bb
+                // 2. Best sun state first (sunny > shaded > night).
+                val ra = rankBucket(a); val rb = rankBucket(b)
+                if (ra != rb) return@sortedWith ra - rb
+                // 3. Closer beats farther within the same bucket — makes panning reorder the list.
+                val dc = da.compareTo(db)
+                if (dc != 0) return@sortedWith dc
+                // 4. Sun-time tiebreaker.
+                when (ra) {
+                    0 -> secondsUntil(b.nextChange, instant).compareTo(secondsUntil(a.nextChange, instant))
+                    1 -> secondsUntil(a.nextChange, instant).compareTo(secondsUntil(b.nextChange, instant))
+                    else -> b.solar.elevationDeg.compareTo(a.solar.elevationDeg)
+                }
             }
-        }
+            .map { (info, _) -> info }
     }
-
-    /** 0 = within [NEAR_RADIUS_METERS] of the origin (e.g. the map view), 1 = farther. */
-    private fun distanceBucket(spot: Spot, projection: LocalProjection): Int =
-        if (projection.toLocal(spot.latLng).length() <= NEAR_RADIUS_METERS) 0 else 1
 
     private fun rankBucket(info: SpotSunInfo) = when (info.sunlight) {
         Sunlight.SUN -> 0

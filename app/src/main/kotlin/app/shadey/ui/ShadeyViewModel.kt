@@ -72,6 +72,8 @@ data class ShadeyUiState(
      * estimated), and currently only available for freshly downloaded cities.
      */
     val treeShade: Boolean = false,
+    /** True while treeShade is on but the current city has no tree data (needs re-download). */
+    val treeShadeNoData: Boolean = false,
     /** True when there's no usable building data yet, so the UI should prompt for a city. */
     val promptCity: Boolean = false,
 ) {
@@ -100,6 +102,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     // engine already knows how to cast/test (see Tree.canopy()) — populated only for cities
     // downloaded since tree fetching was added; empty (and harmless) everywhere else.
     private var activeTreeCanopies: List<Building> = emptyList()
+    private var activeCitySlug: String? = null
     // Buildings harvested from tiles, accumulated across pans (insertion-ordered for LRU eviction).
     private val accumulated = LinkedHashMap<String, Building>()
     private var bundledBuildings: List<Building> = emptyList()
@@ -150,7 +153,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
             val lastGeo = last?.let { withContext(Dispatchers.IO) { cityStore.geoJsonOf(it) } }
             val restored = if (lastCity != null && lastGeo != null) {
                 val b = withContext(Dispatchers.Default) { GeoJsonBuildings.parse(lastGeo) }
-                if (b.isNotEmpty()) { activateCity(lastCity, b, treeCanopiesFrom(lastGeo)); true } else false
+                if (b.isNotEmpty()) { activateCity(lastCity, b); true } else false
             } else false
             if (!restored) {
                 recompute(rank = true, immediate = true)
@@ -171,13 +174,18 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch {
             // Restores the persisted value on launch (and keeps it in sync thereafter). Only
-            // recomputes when the value actually changes from what's already showing — that
-            // covers "restored true on launch, before any recompute has run with it" without
-            // doubling up on the recompute setTreeShade already triggers when the user flips it.
+            // acts when the value actually changes from what's already showing. If a city is
+            // already loaded when it fires, start the lazy tree load now; otherwise activateCity
+            // will do it once the city is ready (startup race).
             store.treeShade.collect { on ->
                 val changed = _state.value.treeShade != on
                 _state.update { it.copy(treeShade = on) }
-                if (changed) recompute(rank = true)
+                if (changed) {
+                    if (on && activeTreeCanopies.isEmpty() && activeCitySlug != null) {
+                        loadTreesForActiveCity()
+                    }
+                    recompute(rank = true)
+                }
             }
         }
     }
@@ -359,8 +367,11 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Toggle whether tree canopies (when known) cast shade alongside buildings. */
     fun setTreeShade(value: Boolean) {
-        _state.update { it.copy(treeShade = value) }
-        viewModelScope.launch { store.setTreeShade(value) }
+        _state.update { it.copy(treeShade = value, treeShadeNoData = if (!value) false else _state.value.treeShadeNoData) }
+        viewModelScope.launch {
+            store.setTreeShade(value)
+            if (value && activeTreeCanopies.isEmpty()) loadTreesForActiveCity()
+        }
         recompute(rank = true)
     }
 
@@ -385,7 +396,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                     bbox[0], bbox[1], bbox[2], bbox[3], buildings.size,
                 )
                 val updated = withContext(Dispatchers.IO) { cityStore.save(city, geoJson); cityStore.list() }
-                activateCity(city, buildings, treeCanopiesFrom(geoJson))
+                activateCity(city, buildings)
                 _state.update {
                     it.copy(cityBusy = false, cityStatus = null, citySearch = emptyList(),
                         cachedCities = updated)
@@ -404,35 +415,55 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
             val buildings = withContext(Dispatchers.Default) { GeoJsonBuildings.parse(geoJson) }
             if (buildings.isEmpty()) return@launch
             withContext(Dispatchers.IO) { cityStore.setLastUsed(slug) }
-            activateCity(city, buildings, treeCanopiesFrom(geoJson))
+            activateCity(city, buildings)
         }
     }
 
-    /**
-     * Tree canopies from a city's cached GeoJSON, pre-converted to the solid prisms the
-     * shadow engine casts/tests against and capped at [MAX_TREES]. Cities downloaded before
-     * tree fetching was added simply have none — [GeoJsonTrees.parse] returns an empty list,
-     * and the tree-shade toggle quietly does nothing until the city is re-downloaded.
-     */
-    private suspend fun treeCanopiesFrom(geoJson: String): List<Building> = withContext(Dispatchers.Default) {
-        GeoJsonTrees.parse(geoJson).take(MAX_TREES).map { it.canopy() }
-    }
-
     /** Make a downloaded city the active region: its data drives shadows and the map jumps to it. */
-    private fun activateCity(city: CachedCity, buildings: List<Building>, trees: List<Building> = emptyList()) {
+    private fun activateCity(city: CachedCity, buildings: List<Building>) {
         bundledBuildings = buildings
         bundledRegion = BoundingBox(city.south, city.west, city.north, city.east)
         activeBuildings = buildings
-        activeTreeCanopies = trees
+        activeTreeCanopies = emptyList()
+        activeCitySlug = city.slug
         accumulated.clear()
         shadowCache.clear()
         shadowCacheSunKey = null
         framesViewKey = null
         center = LatLng(city.lat, city.lng)
         _state.update {
-            it.copy(sourceLabel = "${city.name} · ${buildings.size} buildings", cameraTarget = center)
+            it.copy(
+                sourceLabel = "${city.name} · ${buildings.size} buildings",
+                cameraTarget = center,
+                treeShadeNoData = false,
+            )
+        }
+        // Tree canopies are loaded lazily when the toggle is on — avoids a second full GeoJSON
+        // parse on every startup for users who leave the toggle off (the common case).
+        if (_state.value.treeShade) {
+            viewModelScope.launch { loadTreesForActiveCity() }
         }
         recompute(rank = true, immediate = true)
+    }
+
+    /**
+     * Loads tree canopies for the currently-active downloaded city from its cached GeoJSON.
+     * Sets [ShadeyUiState.treeShadeNoData] if the city pre-dates tree data or has no trees,
+     * triggering the UI prompt to re-download. No-ops if no city is active (bundled Berlin).
+     */
+    private suspend fun loadTreesForActiveCity() {
+        val slug = activeCitySlug ?: run {
+            // Bundled data — no tree dataset available at all.
+            if (_state.value.treeShade) _state.update { it.copy(treeShadeNoData = true) }
+            return
+        }
+        val geoJson = withContext(Dispatchers.IO) { cityStore.geoJsonOf(slug) } ?: return
+        val canopies = withContext(Dispatchers.Default) {
+            GeoJsonTrees.parse(geoJson).take(MAX_TREES).map { it.canopy() }
+        }
+        activeTreeCanopies = canopies
+        _state.update { it.copy(treeShadeNoData = canopies.isEmpty() && it.treeShade) }
+        if (canopies.isNotEmpty()) recompute(rank = true)
     }
 
     /**

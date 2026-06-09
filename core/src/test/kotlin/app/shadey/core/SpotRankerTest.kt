@@ -57,6 +57,18 @@ class SpotRankerTest {
     }
 
     @Test
+    fun `nearest spot wins among same-bucket same-sun spots`() {
+        // Both spots sunny, both in the near bucket — the closer one should lead so panning
+        // visibly reorders the list even when everything is "near".
+        val origin = LatLng(52.51, 13.46)
+        val close = Spot("close", "Close Spot", 52.511, 13.461) // ~150 m
+        val farish = Spot("farish", "Farish Spot", 52.54, 13.49)  // ~4 km
+        val ranked = ranker.rank(listOf(farish, close), noon, origin) { emptyList() }
+        assertEquals(listOf("close", "farish"), ranked.map { it.spot.id })
+        assertEquals(listOf(Sunlight.SUN, Sunlight.SUN), ranked.map { it.sunlight })
+    }
+
+    @Test
     fun `a nearby shaded spot outranks a sunny spot far across town`() {
         // Mirrors the reported bug: looking at one neighbourhood showed a sunny spot
         // ~19 km away as the lead result, ahead of anything actually nearby.

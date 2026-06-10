@@ -366,14 +366,13 @@ object BuildingDownloader {
     private fun polygon(ring: JSONArray): JSONObject =
         JSONObject().put("type", "Polygon").put("coordinates", JSONArray().put(ring))
 
-    private companion object {
-        /** Rings with more vertices than this are likely OSM admin boundaries mislabelled as
-         *  buildings. Calling toString() on a JSONObject with 500k+ coordinates allocates a
-         *  String large enough to OOM a 256 MB heap — skip those features instead. */
-        const val MAX_RING_POINTS = 5_000
-        /** Cap multipolygon outer rings to bound the per-feature JSON size. */
-        const val MAX_OUTER_RINGS = 50
-    }
+    /** Rings with more vertices than this are likely OSM admin boundaries mislabelled as
+     *  buildings. Calling toString() on a JSONObject with 500k+ coordinates allocates a
+     *  String large enough to OOM a 256 MB heap — skip those features instead. */
+    private const val MAX_RING_POINTS = 5_000
+
+    /** Cap multipolygon outer rings to bound the per-feature JSON size. */
+    private const val MAX_OUTER_RINGS = 50
 }
 
 /** Persists downloaded city building data in the app's private files dir. */

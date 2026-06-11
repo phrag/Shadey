@@ -420,6 +420,7 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
         onSetRoaming = vm::setAllowRoaming,
         treeShade = state.treeShade,
         treeShadeNoData = state.treeShadeNoData,
+        treeShadeCanRedownload = state.treeShadeCanRedownload,
         onSetTreeShade = vm::setTreeShade,
         onDismiss = { showSettings = false },
     )
@@ -699,6 +700,7 @@ private fun SettingsDialog(
     onSetRoaming: (Boolean) -> Unit,
     treeShade: Boolean,
     treeShadeNoData: Boolean,
+    treeShadeCanRedownload: Boolean,
     onSetTreeShade: (Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -755,15 +757,19 @@ private fun SettingsDialog(
                         )
                         if (treeShade && treeShadeNoData) {
                             Text(
-                                "No tree data for this city — re-download it to include tree locations.",
+                                if (treeShadeCanRedownload)
+                                    "No tree data for this city — re-download it to include tree locations."
+                                else
+                                    "No tree data available for this area. Download a city to enable tree shadows.",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.error.copy(alpha = 0.8f),
                             )
                         } else {
                             Text(
-                                "Let tree canopies cast shade alongside buildings, in cities downloaded " +
-                                    "with tree data. Approximate — OSM rarely measures a tree's actual " +
-                                    "size, so most canopies are modelled as a generic mature street tree.",
+                                "Let tree canopies cast shade alongside buildings. Available in bundled " +
+                                    "Berlin and in downloaded cities. Approximate — OSM rarely measures " +
+                                    "a tree's actual size, so most canopies are modelled as a generic " +
+                                    "mature street tree.",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                             )

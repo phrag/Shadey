@@ -495,21 +495,28 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
      * No-ops if no city is active (bundled Berlin).
      */
     private suspend fun loadTreesForActiveCity(showPrompt: Boolean = false) {
-        val slug = activeCitySlug ?: run {
-            if (_state.value.treeShade) _state.update {
-                it.copy(treeShadeNoData = true, promptTreeDownload = showPrompt)
+        val canopies: List<Building>
+        if (activeCitySlug == null) {
+            // Bundled Berlin — try the bundled tree asset (no download required).
+            val bundled = loadBundledTrees()
+            if (bundled.isEmpty()) {
+                if (_state.value.treeShade) _state.update {
+                    it.copy(treeShadeNoData = true, promptTreeDownload = showPrompt)
+                }
+                return
             }
-            return
-        }
-        val file = withContext(Dispatchers.IO) { cityStore.geoJsonFileOf(slug) } ?: run {
-            if (_state.value.treeShade) _state.update {
-                it.copy(treeShadeNoData = true, promptTreeDownload = showPrompt)
+            canopies = bundled
+        } else {
+            val file = withContext(Dispatchers.IO) { cityStore.geoJsonFileOf(activeCitySlug!!) } ?: run {
+                if (_state.value.treeShade) _state.update {
+                    it.copy(treeShadeNoData = true, promptTreeDownload = showPrompt)
+                }
+                return
             }
-            return
-        }
-        val canopies = withContext(Dispatchers.Default) {
-            runCatching { GeoJsonFile.trees(file) }.getOrDefault(emptyList())
-                .take(MAX_TREES).map { it.canopy() }
+            canopies = withContext(Dispatchers.Default) {
+                runCatching { GeoJsonFile.trees(file) }.getOrDefault(emptyList())
+                    .take(MAX_TREES).map { it.canopy() }
+            }
         }
         activeTreeCanopies = canopies
         val noData = canopies.isEmpty() && _state.value.treeShade
@@ -520,7 +527,21 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                 treeCountLabel = if (canopies.isNotEmpty()) "${canopies.size} trees" else "",
             )
         }
-        if (canopies.isNotEmpty()) recompute(rank = true)
+        if (canopies.isNotEmpty()) {
+            // Wait for any in-flight shadow computation to complete before launching a new one.
+            // Without this, the tree-load recompute cancels the building-only recompute that
+            // activateCity() kicked off, and building shadows don't appear until the combined
+            // recompute finishes — making buildings feel slow/missing right after a download.
+            recomputeJob?.join()
+            recompute(rank = true)
+        }
+    }
+
+    private suspend fun loadBundledTrees(): List<Building> = withContext(Dispatchers.IO) {
+        runCatching {
+            getApplication<Application>().assets.open("data/berlin_trees.geojson")
+                .use { GeoJsonFile.trees(it) }.take(MAX_TREES).map { it.canopy() }
+        }.getOrDefault(emptyList())
     }
 
     /**

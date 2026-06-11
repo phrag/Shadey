@@ -637,11 +637,30 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Buildings to cast shadows for: those in view, closest first, capped for performance. */
+    /**
+     * Buildings (and, when tree shade is on, tree canopies) to cast shadows for.
+     * Buildings and canopies are budgeted separately so a dense building view does not
+     * crowd out every tree: up to [MAX_BUILDING_SHADOWS] buildings + [MAX_TREE_SHADOWS]
+     * canopies, each sub-list sorted nearest-first.
+     *
+     * The unified [buildings] parameter is the output of [shadowSources], which concatenates
+     * [activeBuildings] then [activeTreeCanopies]. Canopies are identified by index position
+     * relative to [activeBuildings].size rather than by type inspection.
+     */
+    private fun inViewShadowSources(c: LatLng, buildings: List<Building>): List<Building> {
+        val canopyStart = activeBuildings.size  // canopies start after regular buildings
+        val bldgs = buildingsInView(c, buildings.subList(0, minOf(canopyStart, buildings.size)))
+            .sortedBy { distanceSq(c, it.centroid()) }.take(MAX_BUILDING_SHADOWS)
+        val trees = if (canopyStart < buildings.size)
+            buildingsInView(c, buildings.subList(canopyStart, buildings.size))
+                .sortedBy { distanceSq(c, it.centroid()) }.take(MAX_TREE_SHADOWS)
+        else emptyList()
+        return bldgs + trees
+    }
+
+    /** Buildings to cast shadows for in the live view: those in view, closest first. */
     private fun inViewBuildings(c: LatLng, buildings: List<Building>): List<Building> =
-        buildingsInView(c, buildings)
-            .sortedBy { distanceSq(c, it.centroid()) }
-            .take(MAX_SHADOWS)
+        inViewShadowSources(c, buildings)
 
     private fun bucketOf(minutes: Int): Int = (minutes / FRAME_STEP_MIN) * FRAME_STEP_MIN
 
@@ -667,6 +686,11 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
      * Precompute a shadow + spot-colour frame for every daylight bucket of the current day, for
      * the buildings in the current view. Runs once per view (skipped if already built) and is
      * cancelled when the view changes. After it completes, [setTime] is a pure lookup.
+     *
+     * A 2-second settle delay before the heavy computation begins ensures rapid panning (which
+     * cancels and restarts this job on every camera-idle event) generates no garbage at all —
+     * only a stable view triggers actual work, so the GC churn from creating/discarding 144
+     * per-frame shadow JSON strings on every pan is eliminated.
      */
     private fun precomputeFrames() {
         val key = viewKey()
@@ -677,7 +701,12 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         val date = _state.value.date
         val spots = (curated + userSpots).distinctBy { it.id }
         frameJob = viewModelScope.launch(Dispatchers.Default) {
-            val inView = inViewBuildings(frozenCenter, frozenBuildings)
+            // Wait for the view to settle before doing any expensive allocation.
+            // If the user is still panning this job will be cancelled before the delay fires,
+            // producing zero garbage. Only a stable view proceeds to actual frame computation.
+            delay(2_000L)
+            if (!isActive) return@launch
+            val inView = inViewShadowSources(frozenCenter, frozenBuildings)
             val near = spots.associate { it.id to buildingsNear(it.latLng, frozenBuildings, radiusMeters = 150.0) }
             val shadows = HashMap<Int, String>()
             val spotsByBucket = HashMap<Int, String>()
@@ -730,12 +759,19 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private companion object {
-        const val MAX_SHADOWS = 600
+        // Buildings and tree canopies get separate shadow budgets so a dense building view
+        // does not crowd out every visible tree. The totals are kept lower than the old
+        // single MAX_SHADOWS = 600 to partially offset the extra tree work.
+        const val MAX_BUILDING_SHADOWS = 400
+        const val MAX_TREE_SHADOWS = 150
         val EMPTY_RING = emptyList<LatLng>()
         const val MIN_BUNDLED_BUILDINGS = 1000
         const val MAX_CACHE_ENTRIES = 6000
         const val MAX_ACCUMULATED = 8000
-        const val FRAME_STEP_MIN = 10
+        // 15-minute buckets → 96 frames per day instead of 144. Combined with the 2-second
+        // settle delay in precomputeFrames(), this cuts per-run garbage by ~33% and the
+        // sustained GC pressure from rapid panning is eliminated entirely.
+        const val FRAME_STEP_MIN = 15
         // A generous cap on how many tree canopies a city keeps active. Dense urban tree
         // cadastres (Berlin's alone lists ~700k trees citywide) could otherwise hand the shadow
         // engine tens of thousands of extra prisms for one download — this bounds that without

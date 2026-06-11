@@ -107,18 +107,18 @@ object BuildingDownloader {
     }
 
     /**
-     * Fetch buildings for [bbox] and return a GeoJSON FeatureCollection string.
+     * Fetch buildings for [bbox], writing a GeoJSON FeatureCollection to [dest].
      *
-     * The Overpass response for a large city can be 50–70 MB of JSON. Loading it into a
-     * String would OOM on devices with a 256 MB heap limit. Instead we:
+     * The Overpass response for a large city can be 50–70 MB of JSON, and even the trimmed
+     * GeoJSON output is tens of MB. Holding either in a String (let alone a parsed JSON tree)
+     * OOMs on devices with a 256 MB heap limit. Instead we:
      *   1. Stream the HTTP response body to a temp file (8 KB chunks, no large in-memory copy).
      *   2. Stream-parse the raw Overpass file with JsonReader, writing each GeoJSON feature
-     *      immediately to a second temp file — so peak heap is one feature at a time, not the
-     *      full city.
-     *   3. Read the finished GeoJSON file once (it fits because it is already the trimmed output).
-     *   4. Delete both temp files immediately after.
+     *      immediately to [dest] — so peak heap is one feature at a time, not the full city.
+     *   3. Leave [dest] on disk for the caller to stream-parse (see [GeoJsonFile]) and keep;
+     *      on failure the caller should delete it (it may hold a partial write).
      */
-    suspend fun downloadGeoJson(bbox: DoubleArray, onStatus: (String) -> Unit = {}): String = withContext(Dispatchers.IO) {
+    suspend fun downloadGeoJson(bbox: DoubleArray, dest: File, onStatus: (String) -> Unit = {}): Unit = withContext(Dispatchers.IO) {
         val (s, w, n, e) = bbox
         // Trees come along for the ride so the cached city is ready for tree-shade the moment
         // it's switched on — no separate download/toggle gating to keep track of. Individual
@@ -135,7 +135,6 @@ object BuildingDownloader {
         """.trimIndent()
         val postData = "data=" + URLEncoder.encode(query, "UTF-8")
         val tmpFile = File.createTempFile("overpass", ".json")
-        val geoJsonFile = File.createTempFile("overpass_geo", ".geojson")
         try {
             var lastErr: Exception? = null
             for (url in ENDPOINTS) {
@@ -149,8 +148,8 @@ object BuildingDownloader {
                         if (!isActive) throw CancellationException("Cancelled")
                         if (ok) {
                             onStatus("Processing buildings…")
-                            overpassFileToGeoJson(tmpFile, geoJsonFile)
-                            return@withContext geoJsonFile.readText()
+                            overpassFileToGeoJson(tmpFile, dest)
+                            return@withContext
                         }
                     } catch (ex: CancellationException) {
                         throw ex
@@ -163,7 +162,6 @@ object BuildingDownloader {
             throw IOException("Could not reach OpenStreetMap: ${lastErr?.message ?: "unknown error"}")
         } finally {
             tmpFile.delete()
-            geoJsonFile.delete()
         }
     }
 
@@ -343,7 +341,7 @@ object BuildingDownloader {
 
     /**
      * Tree properties as point-feature tags: `crown_radius`/`height` are included only when
-     * OSM actually has them (most tree nodes don't) — [GeoJsonTrees] fills in defaults for
+     * OSM actually has them (most tree nodes don't) — [GeoJsonFile.trees] fills in defaults for
      * the rest. `deciduous` defaults true (most urban street trees are), false only for an
      * explicit `leaf_cycle=evergreen`.
      */
@@ -377,7 +375,11 @@ object BuildingDownloader {
 
 /** Persists downloaded city building data in the app's private files dir. */
 class CityStore(private val filesDir: File) {
-    private val dir = File(filesDir, "cities").apply { mkdirs() }
+    private val dir = File(filesDir, "cities").apply {
+        mkdirs()
+        // Staging files only survive a crash mid-download; they're never valid city data.
+        listFiles { f -> f.name.endsWith(".part") }?.forEach { it.delete() }
+    }
     private val indexFile = File(dir, "index.json")
 
     fun list(): List<CachedCity> {
@@ -397,11 +399,25 @@ class CityStore(private val filesDir: File) {
     fun lastUsedSlug(): String? =
         runCatching { JSONObject(indexFile.readText()).optString("last").ifBlank { null } }.getOrNull()
 
-    fun geoJsonOf(slug: String): String? =
-        runCatching { File(dir, "$slug.geojson").readText() }.getOrNull()
+    /** The city's cached GeoJSON file, or null if it hasn't been (fully) downloaded. */
+    fun geoJsonFileOf(slug: String): File? =
+        File(dir, "$slug.geojson").takeIf { it.isFile && it.length() > 0L }
 
-    fun save(city: CachedCity, geoJson: String) {
-        File(dir, "${city.slug}.geojson").writeText(geoJson)
+    /**
+     * Scratch path for an in-progress download. Kept separate from the live `.geojson` so a
+     * failed or cancelled (re-)download can never clobber a city's existing data — promote
+     * it with [commit] only once it has been validated.
+     */
+    fun stagingFileFor(slug: String): File = File(dir, "$slug.geojson.part")
+
+    /** Promote [staging] to the city's live GeoJSON and add/update its index entry. */
+    fun commit(city: CachedCity, staging: File) {
+        val live = File(dir, "${city.slug}.geojson")
+        live.delete()
+        if (!staging.renameTo(live)) { // same dir, so rename only fails on exotic filesystems
+            staging.copyTo(live, overwrite = true)
+            staging.delete()
+        }
         val others = list().filter { it.slug != city.slug }
         val arr = JSONArray()
         (others + city).forEach { c ->

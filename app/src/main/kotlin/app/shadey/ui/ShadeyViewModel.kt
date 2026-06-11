@@ -3,8 +3,6 @@ package app.shadey.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import app.shadey.core.data.GeoJsonBuildings
-import app.shadey.core.data.GeoJsonTrees
 import app.shadey.core.data.SpotsJson
 import app.shadey.core.model.Building
 import app.shadey.core.model.LatLng
@@ -22,6 +20,7 @@ import app.shadey.data.CachedCity
 import app.shadey.data.CityHit
 import app.shadey.data.CityStore
 import app.shadey.data.Geocoder
+import app.shadey.data.GeoJsonFile
 import app.shadey.data.SavedSpotsStore
 import app.shadey.data.centroid
 import app.shadey.map.ClosedBounds
@@ -155,9 +154,11 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
             _state.update { it.copy(cachedCities = cached) }
             val last = withContext(Dispatchers.IO) { cityStore.lastUsedSlug() }
             val lastCity = cached.firstOrNull { it.slug == last }
-            val lastGeo = last?.let { withContext(Dispatchers.IO) { cityStore.geoJsonOf(it) } }
-            val restored = if (lastCity != null && lastGeo != null) {
-                val b = withContext(Dispatchers.Default) { GeoJsonBuildings.parse(lastGeo) }
+            val lastFile = last?.let { withContext(Dispatchers.IO) { cityStore.geoJsonFileOf(it) } }
+            val restored = if (lastCity != null && lastFile != null) {
+                val b = withContext(Dispatchers.Default) {
+                    runCatching { GeoJsonFile.buildings(lastFile) }.getOrDefault(emptyList())
+                }
                 if (b.isNotEmpty()) { activateCity(lastCity, b); true } else false
             } else false
             if (!restored) {
@@ -408,30 +409,37 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         }
         downloadJob = viewModelScope.launch {
             _state.update { it.copy(cityBusy = true, cityStatus = "${hit.name} — connecting…") }
+            val slug = CityStore.slugOf(hit.name)
+            // Download into a staging file and only commit it over any existing city data once
+            // it has parsed to a non-empty building list — a failed re-download keeps the old data.
+            val staging = cityStore.stagingFileFor(slug)
             try {
                 val bbox = BuildingDownloader.clampedBbox(hit)
-                val geoJson = BuildingDownloader.downloadGeoJson(bbox) { status ->
+                BuildingDownloader.downloadGeoJson(bbox, staging) { status ->
                     _state.update { it.copy(cityStatus = "${hit.name} — $status") }
                 }
                 _state.update { it.copy(cityStatus = "${hit.name} — loading…") }
-                val buildings = withContext(Dispatchers.Default) { GeoJsonBuildings.parse(geoJson) }
+                val buildings = withContext(Dispatchers.Default) { GeoJsonFile.buildings(staging) }
                 if (buildings.isEmpty()) {
+                    withContext(Dispatchers.IO) { staging.delete() }
                     _state.update { it.copy(cityBusy = false, cityStatus = "No buildings found there") }
                     return@launch
                 }
                 val city = CachedCity(
-                    CityStore.slugOf(hit.name), hit.name, hit.lat, hit.lng,
+                    slug, hit.name, hit.lat, hit.lng,
                     bbox[0], bbox[1], bbox[2], bbox[3], buildings.size,
                 )
-                val updated = withContext(Dispatchers.IO) { cityStore.save(city, geoJson); cityStore.list() }
+                val updated = withContext(Dispatchers.IO) { cityStore.commit(city, staging); cityStore.list() }
                 activateCity(city, buildings)
                 _state.update {
                     it.copy(cityBusy = false, cityStatus = null, citySearch = emptyList(),
                         cachedCities = updated)
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
+                staging.delete()
                 throw e // let coroutine machinery handle it; state already reset by cancelDownload()
             } catch (e: Exception) {
+                staging.delete()
                 _state.update { it.copy(cityBusy = false, cityStatus = e.message ?: "Download failed") }
             }
         }
@@ -440,9 +448,11 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     /** Switch to an already-downloaded city (works offline, instant). */
     fun useCity(slug: String) {
         viewModelScope.launch {
-            val geoJson = withContext(Dispatchers.IO) { cityStore.geoJsonOf(slug) } ?: return@launch
+            val file = withContext(Dispatchers.IO) { cityStore.geoJsonFileOf(slug) } ?: return@launch
             val city = withContext(Dispatchers.IO) { cityStore.list() }.firstOrNull { it.slug == slug } ?: return@launch
-            val buildings = withContext(Dispatchers.Default) { GeoJsonBuildings.parse(geoJson) }
+            val buildings = withContext(Dispatchers.Default) {
+                runCatching { GeoJsonFile.buildings(file) }.getOrDefault(emptyList())
+            }
             if (buildings.isEmpty()) return@launch
             withContext(Dispatchers.IO) { cityStore.setLastUsed(slug) }
             activateCity(city, buildings)
@@ -491,14 +501,15 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
             }
             return
         }
-        val geoJson = withContext(Dispatchers.IO) { cityStore.geoJsonOf(slug) } ?: run {
+        val file = withContext(Dispatchers.IO) { cityStore.geoJsonFileOf(slug) } ?: run {
             if (_state.value.treeShade) _state.update {
                 it.copy(treeShadeNoData = true, promptTreeDownload = showPrompt)
             }
             return
         }
         val canopies = withContext(Dispatchers.Default) {
-            GeoJsonTrees.parse(geoJson).take(MAX_TREES).map { it.canopy() }
+            runCatching { GeoJsonFile.trees(file) }.getOrDefault(emptyList())
+                .take(MAX_TREES).map { it.canopy() }
         }
         activeTreeCanopies = canopies
         val noData = canopies.isEmpty() && _state.value.treeShade
@@ -679,8 +690,8 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun loadBundledBuildings(): List<Building> = withContext(Dispatchers.IO) {
         runCatching {
             getApplication<Application>().assets.open("data/berlin_buildings.geojson")
-                .bufferedReader().use { it.readText() }
-        }.getOrNull()?.let { GeoJsonBuildings.parse(it) } ?: emptyList()
+                .use { GeoJsonFile.buildings(it) }
+        }.getOrDefault(emptyList())
     }
 
     private suspend fun loadCurated(): List<Spot> = withContext(Dispatchers.IO) {

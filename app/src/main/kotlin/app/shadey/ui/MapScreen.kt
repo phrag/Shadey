@@ -98,9 +98,6 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
     LaunchedEffect(state.promptCity) {
         if (state.promptCity) { showCities = true; vm.dismissCityPrompt() }
     }
-    LaunchedEffect(state.promptTreeDownload) {
-        if (state.promptTreeDownload) { showCities = true; vm.dismissTreeDownloadPrompt() }
-    }
 
     // Debounced search-as-you-type, biased toward the current map viewport. Skipped entirely
     // when network data is off, so no Nominatim request is made.
@@ -256,13 +253,6 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                         )
-                        if (state.treeCountLabel.isNotEmpty()) {
-                            Text(
-                                state.treeCountLabel,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
-                            )
-                        }
                     }
                     if (state.busy) {
                         Spacer(Modifier.width(8.dp))
@@ -418,10 +408,6 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
     if (showSettings) SettingsDialog(
         allowRoaming = state.allowRoaming,
         onSetRoaming = vm::setAllowRoaming,
-        treeShade = state.treeShade,
-        treeShadeNoData = state.treeShadeNoData,
-        treeShadeCanRedownload = state.treeShadeCanRedownload,
-        onSetTreeShade = vm::setTreeShade,
         onDismiss = { showSettings = false },
     )
     if (showCities) CitiesDialog(state, vm, onDismiss = { showCities = false })
@@ -483,8 +469,7 @@ private fun CitiesDialog(state: ShadeyUiState, vm: ShadeyViewModel, onDismiss: (
         text = {
             Column {
                 Text(
-                    "Download a city's buildings once — it then works offline and instantly. " +
-                        "The download also includes tree locations for the tree-shade feature.",
+                    "Download a city's buildings once — it then works offline and instantly.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                 )
@@ -698,10 +683,6 @@ private fun SelectedCard(info: SpotSunInfo, zone: ZoneId, onRemove: () -> Unit, 
 private fun SettingsDialog(
     allowRoaming: Boolean,
     onSetRoaming: (Boolean) -> Unit,
-    treeShade: Boolean,
-    treeShadeNoData: Boolean,
-    treeShadeCanRedownload: Boolean,
-    onSetTreeShade: (Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val uriHandler = LocalUriHandler.current
@@ -745,38 +726,6 @@ private fun SettingsDialog(
                     }
                     Spacer(Modifier.width(8.dp))
                     Switch(checked = allowRoaming, onCheckedChange = onSetRoaming)
-                }
-                Spacer(Modifier.height(16.dp))
-                Text("Shade", style = MaterialTheme.typography.labelLarge)
-                Spacer(Modifier.height(4.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            "Tree shade",
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                        if (treeShade && treeShadeNoData) {
-                            Text(
-                                if (treeShadeCanRedownload)
-                                    "No tree data for this city — re-download it to include tree locations."
-                                else
-                                    "No tree data available for this area. Download a city to enable tree shadows.",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.error.copy(alpha = 0.8f),
-                            )
-                        } else {
-                            Text(
-                                "Let tree canopies cast shade alongside buildings. Available in bundled " +
-                                    "Berlin and in downloaded cities. Approximate — OSM rarely measures " +
-                                    "a tree's actual size, so most canopies are modelled as a generic " +
-                                    "mature street tree.",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                            )
-                        }
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    Switch(checked = treeShade, onCheckedChange = onSetTreeShade)
                 }
                 Spacer(Modifier.height(16.dp))
                 Text("About", style = MaterialTheme.typography.labelLarge)

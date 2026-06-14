@@ -4,7 +4,6 @@ import android.util.JsonReader
 import android.util.JsonToken
 import app.shadey.core.model.Building
 import app.shadey.core.model.LatLng
-import app.shadey.core.model.Tree
 import java.io.File
 import java.io.InputStream
 import java.io.InputStreamReader
@@ -18,8 +17,7 @@ import java.io.InputStreamReader
  * parser swallows the OutOfMemoryError) surfaced as a bogus "No buildings found there".
  *
  * Property semantics mirror the core parsers exactly: heights from `height`/`render_height`
- * (metres, number or messy string) or `building:levels`; tree features are `Point`s with
- * `properties.kind == "tree"`.
+ * (metres, number or messy string) or `building:levels`.
  */
 object GeoJsonFile {
 
@@ -46,35 +44,6 @@ object GeoJsonFile {
                     outerRing(poly)?.let { out.add(Building("$baseId:$i", it, height, minHeight)) }
                 }
             }
-        }
-        return out
-    }
-
-    fun trees(
-        file: File,
-        defaultCrownRadiusMeters: Double = 3.0,
-        defaultHeightMeters: Double = 12.0,
-    ): List<Tree> = file.inputStream().use { trees(it, defaultCrownRadiusMeters, defaultHeightMeters) }
-
-    fun trees(
-        input: InputStream,
-        defaultCrownRadiusMeters: Double = 3.0,
-        defaultHeightMeters: Double = 12.0,
-    ): List<Tree> {
-        val out = ArrayList<Tree>()
-        var auto = 0
-        forEachFeature(input) { f ->
-            if (f.props["kind"] != "tree" || f.geomType != "Point") return@forEachFeature
-            val pt = f.coords as? List<*> ?: return@forEachFeature
-            val lng = pt.getOrNull(0) as? Double ?: return@forEachFeature
-            val lat = pt.getOrNull(1) as? Double ?: return@forEachFeature
-            val crownRadius = f.props["crown_radius"]?.toDoubleOrNull()?.takeIf { it > 0 }
-                ?: defaultCrownRadiusMeters
-            val height = f.props["height"]?.toDoubleOrNull()?.takeIf { it > 0 }
-                ?: defaultHeightMeters
-            val deciduous = f.props["deciduous"]?.toBooleanStrictOrNull() ?: true
-            val id = f.id ?: f.props["osm_id"] ?: "t${auto++}"
-            out.add(Tree(id, LatLng(lat, lng), crownRadius, height, deciduous))
         }
         return out
     }

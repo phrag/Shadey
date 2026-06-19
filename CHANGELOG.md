@@ -3,6 +3,13 @@
 All notable changes to Shadey are documented here. Releases are published at
 https://github.com/phrag/shadey/releases.
 
+## Unreleased
+
+**Spots**
+- Long-press anywhere on the map to drop a pin and save it as a spot — a
+  plain tap no longer does this, so panning and tapping spots/the dropped-pin
+  card stay unaffected.
+
 ## 1.1.0
 
 **Stability**

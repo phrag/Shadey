@@ -54,6 +54,7 @@ fun ShadeyMap(
     pinGeoJson: String,
     cameraTarget: CoreLatLng?,
     onMapClick: (CoreLatLng) -> Unit,
+    onMapLongClick: (CoreLatLng) -> Unit,
     onCameraIdle: (center: CoreLatLng, bounds: ClosedBounds) -> Unit,
     onBuildingsQueried: (features: List<Feature>, belowZoom: Boolean) -> Unit,
     onCameraTargetConsumed: () -> Unit,
@@ -109,6 +110,11 @@ fun ShadeyMap(
                             .toTypedArray()
                         map.addOnMapClickListener { p ->
                             onMapClick(CoreLatLng(p.latitude, p.longitude))
+                            true
+                        }
+                        map.addOnMapLongClickListener { p ->
+                            mapView.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                            onMapLongClick(CoreLatLng(p.latitude, p.longitude))
                             true
                         }
                         // Debounced building query — camera-idle and render-finish can both fire

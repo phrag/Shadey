@@ -604,7 +604,8 @@ private fun ShadeyMapLayer(state: ShadeyUiState, vm: ShadeyViewModel) {
         spotsGeoJson = state.spotsGeoJson,
         pinGeoJson = state.pinGeoJson,
         cameraTarget = state.cameraTarget,
-        onMapClick = {}, // map taps no longer drop pins
+        onMapClick = {}, // a plain tap no longer drops a pin — long-press does
+        onMapLongClick = vm::onMapClick,
         onCameraIdle = vm::onCameraIdle,
         onBuildingsQueried = vm::onBuildingsQueried,
         onCameraTargetConsumed = vm::onCameraTargetConsumed,

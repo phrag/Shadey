@@ -1,6 +1,8 @@
 package app.shadey.data
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -86,7 +88,6 @@ object BuildingDownloader {
     private val ENDPOINTS = listOf(
         "https://overpass-api.de/api/interpreter",
         "https://overpass.kumi.systems/api/interpreter",
-        "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
     )
 
     // Cap the downloaded area so a single city stays a manageable size on a phone.
@@ -106,15 +107,18 @@ object BuildingDownloader {
     }
 
     /**
-     * Fetch buildings for [bbox] and return a GeoJSON FeatureCollection string.
+     * Fetch buildings for [bbox], writing a GeoJSON FeatureCollection to [dest].
      *
-     * The Overpass response for a large city can be 50–70 MB of JSON. Loading it into a
-     * String would OOM on devices with a 256 MB heap limit. Instead we:
+     * The Overpass response for a large city can be 50–70 MB of JSON, and even the trimmed
+     * GeoJSON output is tens of MB. Holding either in a String (let alone a parsed JSON tree)
+     * OOMs on devices with a 256 MB heap limit. Instead we:
      *   1. Stream the HTTP response body to a temp file (8 KB chunks, no large in-memory copy).
-     *   2. Stream-parse the temp file with JsonReader so we never hold the whole blob in RAM.
-     *   3. Delete the temp file immediately after parsing.
+     *   2. Stream-parse the raw Overpass file with JsonReader, writing each GeoJSON feature
+     *      immediately to [dest] — so peak heap is one feature at a time, not the full city.
+     *   3. Leave [dest] on disk for the caller to stream-parse (see [GeoJsonFile]) and keep;
+     *      on failure the caller should delete it (it may hold a partial write).
      */
-    suspend fun downloadGeoJson(bbox: DoubleArray): String = withContext(Dispatchers.IO) {
+    suspend fun downloadGeoJson(bbox: DoubleArray, dest: File, onStatus: (String) -> Unit = {}): Unit = withContext(Dispatchers.IO) {
         val (s, w, n, e) = bbox
         val query = """
             [out:json][timeout:120];
@@ -131,9 +135,19 @@ object BuildingDownloader {
             for (url in ENDPOINTS) {
                 repeat(2) { attempt ->
                     try {
-                        if (httpPostToFile(url, postData, tmpFile)) {
-                            return@withContext overpassFileToGeoJson(tmpFile)
+                        val ok = httpPostToFile(
+                            url, postData, tmpFile,
+                            isCancelled = { !isActive },
+                            onProgress = { bytes -> onStatus("Downloading… ${formatMB(bytes)}") },
+                        )
+                        if (!isActive) throw CancellationException("Cancelled")
+                        if (ok) {
+                            onStatus("Processing buildings…")
+                            overpassFileToGeoJson(tmpFile, dest)
+                            return@withContext
                         }
+                    } catch (ex: CancellationException) {
+                        throw ex
                     } catch (ex: Exception) {
                         lastErr = ex
                     }
@@ -146,8 +160,14 @@ object BuildingDownloader {
         }
     }
 
-    /** POST [postBody] to [url], streaming the response body into [dest]. Returns false on non-2xx. */
-    private fun httpPostToFile(url: String, postBody: String, dest: File): Boolean {
+    /** POST [postBody] to [url], streaming the response body into [dest]. Returns false on non-2xx or cancellation. */
+    private fun httpPostToFile(
+        url: String,
+        postBody: String,
+        dest: File,
+        isCancelled: () -> Boolean = { false },
+        onProgress: (bytesWritten: Long) -> Unit = {},
+    ): Boolean {
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 30_000
             readTimeout = 120_000
@@ -158,41 +178,64 @@ object BuildingDownloader {
         }
         return try {
             conn.outputStream.use { it.write(postBody.toByteArray()) }
-            if (conn.responseCode !in 200..299) false
-            else { conn.inputStream.use { inp -> dest.outputStream().use { inp.copyTo(it) } }; true }
+            if (conn.responseCode !in 200..299) return false
+            conn.inputStream.use { inp ->
+                dest.outputStream().use { out ->
+                    val buf = ByteArray(8_192)
+                    var total = 0L
+                    var n: Int
+                    while (inp.read(buf).also { n = it } != -1) {
+                        if (isCancelled()) return false
+                        out.write(buf, 0, n)
+                        total += n
+                        onProgress(total)
+                    }
+                }
+            }
+            true
         } finally {
             conn.disconnect()
         }
     }
 
+    private fun formatMB(bytes: Long) = "%.1f MB".format(bytes.toDouble() / 1_048_576)
+
     /**
-     * Stream-parse an Overpass JSON file using [android.util.JsonReader].
-     * Reads one element at a time so peak memory is proportional to a single building, not
-     * the full response.
+     * Stream-parse [source] (raw Overpass JSON) writing a GeoJSON FeatureCollection to [dest].
+     *
+     * Each feature JSONObject is stringified and written immediately so it can be GC'd — peak
+     * heap is proportional to one feature, not the whole city. This avoids the OOM crash that
+     * occurred when accumulating all features in a JSONArray before calling toString().
      */
-    private fun overpassFileToGeoJson(file: File): String {
-        val features = JSONArray()
-        android.util.JsonReader(java.io.InputStreamReader(file.inputStream(), "UTF-8")).use { r ->
-            r.beginObject()
-            while (r.hasNext()) {
-                if (r.nextName() == "elements") {
-                    r.beginArray()
-                    while (r.hasNext()) parseElement(r)?.let { features.put(it) }
-                    r.endArray()
-                } else {
-                    r.skipValue()
+    private fun overpassFileToGeoJson(source: File, dest: File) {
+        dest.bufferedWriter(Charsets.UTF_8).use { w ->
+            w.write("""{"type":"FeatureCollection","attribution":"(c) OpenStreetMap contributors, ODbL","features":[""")
+            var first = true
+            android.util.JsonReader(java.io.InputStreamReader(source.inputStream(), "UTF-8")).use { r ->
+                r.beginObject()
+                while (r.hasNext()) {
+                    if (r.nextName() == "elements") {
+                        r.beginArray()
+                        while (r.hasNext()) {
+                            parseElement(r)?.let { feature ->
+                                if (!first) w.write(",")
+                                w.write(feature.toString())
+                                first = false
+                            }
+                        }
+                        r.endArray()
+                    } else {
+                        r.skipValue()
+                    }
                 }
             }
+            w.write("]}")
         }
-        return JSONObject()
-            .put("type", "FeatureCollection")
-            .put("attribution", "(c) OpenStreetMap contributors, ODbL")
-            .put("features", features)
-            .toString()
     }
 
     private fun parseElement(r: android.util.JsonReader): JSONObject? {
-        var type = ""; var id = ""; var height = DEFAULT_HEIGHT_M
+        var type = ""; var id = ""
+        var tags: Map<String, String> = emptyMap()
         var wayRing: JSONArray? = null
         val outerRings = JSONArray()
         r.beginObject()
@@ -200,20 +243,19 @@ object BuildingDownloader {
             when (r.nextName()) {
                 "type" -> type = r.nextString()
                 "id"   -> id = r.nextLong().toString()
-                "tags" -> height = readHeight(r)
+                "tags" -> tags = readTags(r)
                 "geometry" -> wayRing = readRing(r)
                 "members"  -> readOuters(r, outerRings)
                 else -> r.skipValue()
             }
         }
         r.endObject()
-        val props = JSONObject().put("height", height).put("osm_id", "$type/$id")
         return when (type) {
-            "way" -> wayRing?.let { feature(props, polygon(it)) }
+            "way" -> wayRing?.let { feature(buildingProps(tags, type, id), polygon(it)) }
             "relation" -> if (outerRings.length() > 0) {
                 val polys = JSONArray()
                 for (i in 0 until outerRings.length()) polys.put(JSONArray().put(outerRings.getJSONArray(i)))
-                feature(props, JSONObject().put("type", "MultiPolygon").put("coordinates", polys))
+                feature(buildingProps(tags, type, id), JSONObject().put("type", "MultiPolygon").put("coordinates", polys))
             } else null
             else -> null
         }
@@ -221,6 +263,7 @@ object BuildingDownloader {
 
     private fun readRing(r: android.util.JsonReader): JSONArray? {
         val ring = JSONArray()
+        var oversized = false
         r.beginArray()
         while (r.hasNext()) {
             var lat = Double.NaN; var lon = Double.NaN
@@ -233,10 +276,17 @@ object BuildingDownloader {
                 }
             }
             r.endObject()
-            if (!lat.isNaN() && !lon.isNaN()) ring.put(JSONArray().put(lon).put(lat))
+            if (!lat.isNaN() && !lon.isNaN() && !oversized) {
+                ring.put(JSONArray().put(lon).put(lat))
+                // A single ring with > MAX_RING_POINTS vertices can produce a JSONObject
+                // whose toString() exceeds the heap limit (e.g. an OSM administrative
+                // boundary tagged as a building). Drain the rest of the ring from the
+                // reader and discard this feature rather than OOM.
+                if (ring.length() >= MAX_RING_POINTS) oversized = true
+            }
         }
         r.endArray()
-        return if (ring.length() >= 4) ring else null
+        return if (!oversized && ring.length() >= 4) ring else null
     }
 
     private fun readOuters(r: android.util.JsonReader, out: JSONArray) {
@@ -252,33 +302,30 @@ object BuildingDownloader {
                 }
             }
             r.endObject()
-            if (role == "outer") ring?.let { out.put(it) }
+            if (role == "outer" && ring != null && out.length() < MAX_OUTER_RINGS) out.put(ring)
         }
         r.endArray()
     }
 
-    private fun readHeight(r: android.util.JsonReader): Double {
-        var explicit = Double.NaN; var fromLevels = Double.NaN
+    /** OSM tag values are always JSON strings — read the whole `tags` object as a string map. */
+    private fun readTags(r: android.util.JsonReader): Map<String, String> {
+        val tags = HashMap<String, String>()
         r.beginObject()
-        while (r.hasNext()) {
-            when (r.nextName()) {
-                "height", "building:height" -> {
-                    val v = r.nextString().filter { it.isDigit() || it == '.' }.toDoubleOrNull()
-                    if (v != null && v > 0) explicit = v
-                }
-                "building:levels" -> {
-                    val v = r.nextString().substringBefore(";").toDoubleOrNull()
-                    if (v != null && v > 0) fromLevels = v * METERS_PER_LEVEL
-                }
-                else -> r.skipValue()
-            }
-        }
+        while (r.hasNext()) tags[r.nextName()] = r.nextString()
         r.endObject()
-        return when {
-            !explicit.isNaN()    -> explicit
-            !fromLevels.isNaN()  -> fromLevels
-            else                 -> DEFAULT_HEIGHT_M
-        }
+        return tags
+    }
+
+    private fun buildingProps(tags: Map<String, String>, type: String, id: String): JSONObject =
+        JSONObject().put("height", buildingHeight(tags)).put("osm_id", "$type/$id")
+
+    private fun buildingHeight(tags: Map<String, String>): Double {
+        (tags["height"] ?: tags["building:height"])
+            ?.filter { it.isDigit() || it == '.' }?.toDoubleOrNull()
+            ?.let { if (it > 0) return it }
+        tags["building:levels"]?.substringBefore(";")?.toDoubleOrNull()
+            ?.let { if (it > 0) return it * METERS_PER_LEVEL }
+        return DEFAULT_HEIGHT_M
     }
 
     private fun feature(props: JSONObject, geometry: JSONObject): JSONObject =
@@ -287,11 +334,22 @@ object BuildingDownloader {
     private fun polygon(ring: JSONArray): JSONObject =
         JSONObject().put("type", "Polygon").put("coordinates", JSONArray().put(ring))
 
+    /** Rings with more vertices than this are likely OSM admin boundaries mislabelled as
+     *  buildings. Calling toString() on a JSONObject with 500k+ coordinates allocates a
+     *  String large enough to OOM a 256 MB heap — skip those features instead. */
+    private const val MAX_RING_POINTS = 5_000
+
+    /** Cap multipolygon outer rings to bound the per-feature JSON size. */
+    private const val MAX_OUTER_RINGS = 50
 }
 
 /** Persists downloaded city building data in the app's private files dir. */
 class CityStore(private val filesDir: File) {
-    private val dir = File(filesDir, "cities").apply { mkdirs() }
+    private val dir = File(filesDir, "cities").apply {
+        mkdirs()
+        // Staging files only survive a crash mid-download; they're never valid city data.
+        listFiles { f -> f.name.endsWith(".part") }?.forEach { it.delete() }
+    }
     private val indexFile = File(dir, "index.json")
 
     fun list(): List<CachedCity> {
@@ -311,11 +369,25 @@ class CityStore(private val filesDir: File) {
     fun lastUsedSlug(): String? =
         runCatching { JSONObject(indexFile.readText()).optString("last").ifBlank { null } }.getOrNull()
 
-    fun geoJsonOf(slug: String): String? =
-        runCatching { File(dir, "$slug.geojson").readText() }.getOrNull()
+    /** The city's cached GeoJSON file, or null if it hasn't been (fully) downloaded. */
+    fun geoJsonFileOf(slug: String): File? =
+        File(dir, "$slug.geojson").takeIf { it.isFile && it.length() > 0L }
 
-    fun save(city: CachedCity, geoJson: String) {
-        File(dir, "${city.slug}.geojson").writeText(geoJson)
+    /**
+     * Scratch path for an in-progress download. Kept separate from the live `.geojson` so a
+     * failed or cancelled (re-)download can never clobber a city's existing data — promote
+     * it with [commit] only once it has been validated.
+     */
+    fun stagingFileFor(slug: String): File = File(dir, "$slug.geojson.part")
+
+    /** Promote [staging] to the city's live GeoJSON and add/update its index entry. */
+    fun commit(city: CachedCity, staging: File) {
+        val live = File(dir, "${city.slug}.geojson")
+        live.delete()
+        if (!staging.renameTo(live)) { // same dir, so rename only fails on exotic filesystems
+            staging.copyTo(live, overwrite = true)
+            staging.delete()
+        }
         val others = list().filter { it.slug != city.slug }
         val arr = JSONArray()
         (others + city).forEach { c ->

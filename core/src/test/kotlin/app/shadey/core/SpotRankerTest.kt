@@ -36,7 +36,8 @@ class SpotRankerTest {
     fun `sunny spot is ranked above a shaded one`() {
         val sunny = Spot("sunny", "Open Square", 52.52, 13.405)
         val shaded = Spot("shaded", "Behind Tower", 52.50, 13.45)
-        val ranked = ranker.rank(listOf(shaded, sunny), noon) { spot ->
+        // Origin near both spots, so distance doesn't decide the order — sun state does.
+        val ranked = ranker.rank(listOf(shaded, sunny), noon, sunny.latLng) { spot ->
             if (spot.id == "shaded") listOf(southBuilding(spot, 60.0)) else emptyList()
         }
         assertEquals("sunny", ranked.first().spot.id)
@@ -50,8 +51,35 @@ class SpotRankerTest {
             Spot("a", "A", 52.52, 13.40),
             Spot("b", "B", 52.51, 13.41),
         )
-        val ranked = ranker.rank(spots, noon) { emptyList() }
+        val ranked = ranker.rank(spots, noon, spots.first().latLng) { emptyList() }
         assertEquals(2, ranked.size)
         assertEquals(listOf(Sunlight.SUN, Sunlight.SUN), ranked.map { it.sunlight })
+    }
+
+    @Test
+    fun `nearest spot wins among same-bucket same-sun spots`() {
+        // Both spots sunny, both in the near bucket — the closer one should lead so panning
+        // visibly reorders the list even when everything is "near".
+        val origin = LatLng(52.51, 13.46)
+        val close = Spot("close", "Close Spot", 52.511, 13.461) // ~150 m
+        val farish = Spot("farish", "Farish Spot", 52.54, 13.49)  // ~4 km
+        val ranked = ranker.rank(listOf(farish, close), noon, origin) { emptyList() }
+        assertEquals(listOf("close", "farish"), ranked.map { it.spot.id })
+        assertEquals(listOf(Sunlight.SUN, Sunlight.SUN), ranked.map { it.sunlight })
+    }
+
+    @Test
+    fun `a nearby shaded spot outranks a sunny spot far across town`() {
+        // Mirrors the reported bug: looking at one neighbourhood showed a sunny spot
+        // ~19 km away as the lead result, ahead of anything actually nearby.
+        val origin = LatLng(52.51, 13.46) // e.g. the centre of the map view
+        val nearby = Spot("nearby", "Corner Café", 52.508, 13.455)
+        val faraway = Spot("faraway", "Lake Across Town", 52.40, 13.20)
+        val ranked = ranker.rank(listOf(faraway, nearby), noon, origin) { spot ->
+            if (spot.id == "nearby") listOf(southBuilding(spot, 60.0)) else emptyList()
+        }
+        assertEquals(listOf("nearby", "faraway"), ranked.map { it.spot.id })
+        assertEquals(Sunlight.SHADE, ranked.first().sunlight)
+        assertEquals(Sunlight.SUN, ranked.last().sunlight)
     }
 }

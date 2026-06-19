@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Fetch real building footprints + heights from OpenStreetMap (Overpass) and
-write the GeoJSON that Shadey bundles for offline, fully on-device use.
+write the GeoJSON file that Shadey bundles for offline use.
 
 Run this where you HAVE network access (the app itself never needs it for the
-bundled region). Output goes to app/src/main/assets/data/berlin_buildings.geojson
-which the app prefers over the synthetic sample when present.
+bundled region). Output:
+  app/src/main/assets/data/berlin_buildings.geojson
 
     python3 fetch_osm.py                      # central Berlin default bbox
     python3 fetch_osm.py --bbox S W N E        # custom bounding box
-    python3 fetch_osm.py --out path.geojson
+    python3 fetch_osm.py --out path.geojson    # custom output path
 
 Data (c) OpenStreetMap contributors, ODbL.
 """
@@ -35,7 +35,11 @@ DEFAULT_HEIGHT_M = 9.0
 METERS_PER_LEVEL = 3.2
 
 
-def overpass_query(bbox):
+# ---------------------------------------------------------------------------
+# Overpass query
+# ---------------------------------------------------------------------------
+
+def building_query(bbox):
     s, w, n, e = bbox
     return f"""
     [out:json][timeout:180];
@@ -47,22 +51,26 @@ def overpass_query(bbox):
     """
 
 
-def fetch(bbox, attempts_per_endpoint=3):
-    """Try each endpoint several times with exponential backoff. Overpass 504/timeouts are
-    common under load, so a few retries on the primary endpoint usually succeed."""
-    query = overpass_query(bbox)
+# ---------------------------------------------------------------------------
+# HTTP helpers
+# ---------------------------------------------------------------------------
+
+def fetch(query, attempts_per_endpoint=3):
+    """Try each endpoint several times with exponential backoff."""
     last_err = None
     for url in OVERPASS_ENDPOINTS:
         for attempt in range(1, attempts_per_endpoint + 1):
             try:
-                print(f"Querying {url} (attempt {attempt}/{attempts_per_endpoint}) ...", file=sys.stderr)
-                r = requests.post(url, data={"data": query}, timeout=300,
-                                  headers={"User-Agent": "Shadey/1.0 (+https://github.com/phrag/shadey)"})
+                print(f"Querying {url} (attempt {attempt}/{attempts_per_endpoint}) ...",
+                      file=sys.stderr)
+                r = requests.post(
+                    url, data={"data": query}, timeout=300,
+                    headers={"User-Agent": "Shadey/1.0 (+https://github.com/phrag/shadey)"},
+                )
                 if r.status_code == 200:
                     return r.json()
                 print(f"  HTTP {r.status_code}", file=sys.stderr)
                 last_err = RuntimeError(f"HTTP {r.status_code}")
-                # 403/400 won't fix themselves on retry — move to the next endpoint.
                 if r.status_code in (400, 403, 429):
                     break
             except Exception as exc:  # noqa: BLE001
@@ -71,6 +79,10 @@ def fetch(bbox, attempts_per_endpoint=3):
             time.sleep(2 ** attempt)  # 2s, 4s, 8s
     raise SystemExit(f"All Overpass endpoints failed: {last_err}")
 
+
+# ---------------------------------------------------------------------------
+# Building parsing
+# ---------------------------------------------------------------------------
 
 def parse_height(tags):
     for key in ("height", "building:height"):
@@ -93,11 +105,12 @@ def parse_height(tags):
 
 
 def ring_from_geometry(geometry):
-    ring = [[round(p["lon"], 7), round(p["lat"], 7)] for p in geometry if "lat" in p and "lon" in p]
+    ring = [[round(p["lon"], 7), round(p["lat"], 7)]
+            for p in geometry if "lat" in p and "lon" in p]
     return ring if len(ring) >= 4 else None
 
 
-def to_features(data):
+def to_building_features(data):
     features = []
     for el in data.get("elements", []):
         tags = el.get("tags", {})
@@ -105,47 +118,63 @@ def to_features(data):
         min_h = 0.0
         if tags.get("min_height"):
             try:
-                min_h = float("".join(c for c in tags["min_height"] if c.isdigit() or c == "."))
+                min_h = float("".join(c for c in tags["min_height"]
+                                      if c.isdigit() or c == "."))
             except ValueError:
                 min_h = 0.0
-        props = {"height": height, "min_height": min_h, "osm_id": f"{el['type']}/{el['id']}"}
+        props = {"height": height, "min_height": min_h,
+                 "osm_id": f"{el['type']}/{el['id']}"}
 
         if el["type"] == "way" and "geometry" in el:
             ring = ring_from_geometry(el["geometry"])
             if ring:
-                features.append({"type": "Feature", "id": props["osm_id"], "properties": props,
-                                 "geometry": {"type": "Polygon", "coordinates": [ring]}})
+                features.append({
+                    "type": "Feature", "id": props["osm_id"],
+                    "properties": props,
+                    "geometry": {"type": "Polygon", "coordinates": [ring]},
+                })
         elif el["type"] == "relation":
-            outers = [m for m in el.get("members", []) if m.get("role") == "outer" and "geometry" in m]
+            outers = [m for m in el.get("members", [])
+                      if m.get("role") == "outer" and "geometry" in m]
             polys = []
             for m in outers:
                 ring = ring_from_geometry(m["geometry"])
                 if ring:
                     polys.append([ring])
             if polys:
-                features.append({"type": "Feature", "id": props["osm_id"], "properties": props,
-                                 "geometry": {"type": "MultiPolygon", "coordinates": polys}})
+                features.append({
+                    "type": "Feature", "id": props["osm_id"],
+                    "properties": props,
+                    "geometry": {"type": "MultiPolygon", "coordinates": polys},
+                })
     return features
 
 
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
 def main():
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--bbox", nargs=4, type=float, metavar=("S", "W", "N", "E"), default=DEFAULT_BBOX)
-    default_out = Path(__file__).resolve().parents[1] / "app/src/main/assets/data/berlin_buildings.geojson"
-    ap.add_argument("--out", type=Path, default=default_out)
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--bbox", nargs=4, type=float, metavar=("S", "W", "N", "E"),
+                    default=DEFAULT_BBOX)
+    root = Path(__file__).resolve().parents[1] / "app/src/main/assets/data"
+    ap.add_argument("--out", type=Path, default=root / "berlin_buildings.geojson")
     args = ap.parse_args()
+    bbox = tuple(args.bbox)
 
-    data = fetch(tuple(args.bbox))
-    features = to_features(data)
-    if not features:
+    building_data = fetch(building_query(bbox))
+    building_features = to_building_features(building_data)
+    if not building_features:
         raise SystemExit("No buildings returned; check the bbox.")
-
-    fc = {"type": "FeatureCollection",
-          "attribution": "(c) OpenStreetMap contributors, ODbL",
-          "features": features}
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(fc, separators=(",", ":")))
-    print(f"Wrote {len(features)} buildings to {args.out}")
+    args.out.write_text(
+        json.dumps({"type": "FeatureCollection",
+                    "attribution": "(c) OpenStreetMap contributors, ODbL",
+                    "features": building_features},
+                   separators=(",", ":")))
+    print(f"Wrote {len(building_features)} buildings to {args.out}")
 
 
 if __name__ == "__main__":

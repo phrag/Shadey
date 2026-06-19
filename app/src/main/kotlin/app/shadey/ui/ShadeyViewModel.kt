@@ -3,7 +3,6 @@ package app.shadey.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import app.shadey.core.data.GeoJsonBuildings
 import app.shadey.core.data.SpotsJson
 import app.shadey.core.model.Building
 import app.shadey.core.model.LatLng
@@ -21,7 +20,10 @@ import app.shadey.data.CachedCity
 import app.shadey.data.CityHit
 import app.shadey.data.CityStore
 import app.shadey.data.Geocoder
+import app.shadey.data.GeoJsonFile
 import app.shadey.data.SavedSpotsStore
+import app.shadey.data.UpdateChecker
+import app.shadey.data.UpdateInfo
 import app.shadey.data.centroid
 import app.shadey.map.ClosedBounds
 import app.shadey.map.GeoJsonWriter
@@ -31,6 +33,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -54,14 +57,29 @@ data class ShadeyUiState(
     val pinGeoJson: String = GeoJsonWriter.emptyCollection(),
     val sourceLabel: String = "Loading…",
     val busy: Boolean = false,
+    /** Short phase text shown while [busy] — e.g. "Computing shade…". Empty otherwise. */
+    val busyLabel: String = "",
     val cameraTarget: LatLng? = null,
     // City download UI.
     val citySearch: List<CityHit> = emptyList(),
     val cachedCities: List<CachedCity> = emptyList(),
     val cityBusy: Boolean = false,
     val cityStatus: String? = null,
+    /**
+     * Whether Shadey may use the network for place search and city downloads. The base map
+     * always loads regardless — this only gates the Nominatim/Overpass requests.
+     */
+    val allowRoaming: Boolean = true,
     /** True when there's no usable building data yet, so the UI should prompt for a city. */
     val promptCity: Boolean = false,
+    // Update checking (opt-in).
+    /** A newer GitHub release, when one is available and not yet dismissed. */
+    val updateAvailable: UpdateInfo? = null,
+    /** True on first run (before the user has chosen) so the UI shows the opt-in prompt. */
+    val promptUpdateOptIn: Boolean = false,
+    val updateChecksEnabled: Boolean = false,
+    val lastUpdateCheck: Long = 0L,
+    val checkingForUpdate: Boolean = false,
 ) {
     val selected: SpotSunInfo? get() = ranked.firstOrNull { it.spot.id == selectedId }
 }
@@ -71,6 +89,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     private val store = SavedSpotsStore(app)
     private val cityStore = CityStore(app.filesDir)
     private var searchJob: Job? = null
+    private var downloadJob: Job? = null
     private val engine = ShadowEngine()
     private val ranker = SpotRanker(engine)
     private val zone: ZoneId = ZoneId.systemDefault()
@@ -84,6 +103,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     private var curated: List<Spot> = emptyList()
     private var userSpots: List<Spot> = emptyList()
     private var activeBuildings: List<Building> = emptyList()
+    private var activeCitySlug: String? = null
     // Buildings harvested from tiles, accumulated across pans (insertion-ordered for LRU eviction).
     private val accumulated = LinkedHashMap<String, Building>()
     private var bundledBuildings: List<Building> = emptyList()
@@ -106,9 +126,12 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     // It persists across pans/zooms so revealing a previously-seen area is instant.
     private val shadowCache = java.util.concurrent.ConcurrentHashMap<String, List<LatLng>>()
     @Volatile private var shadowCacheSunKey: String? = null
-    // The sun bucket the spot ranking was last computed for. Ranking (nextTransition) is the
-    // expensive part, so we only redo it when the sun moves — never on a plain pan.
+    // The sun bucket and map centre the spot ranking was last computed for. Ranking
+    // (nextTransition) is the expensive part, so we skip it unless the sun moved or the
+    // origin changed enough to matter — checked here (not just via the `rank` flag) so a
+    // forced re-rank request can't be lost to a later, unforced recompute cancelling it.
     @Volatile private var rankedSunKey: String? = null
+    @Volatile private var rankedCenter: LatLng? = null
 
     init {
         viewModelScope.launch {
@@ -127,9 +150,11 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
             _state.update { it.copy(cachedCities = cached) }
             val last = withContext(Dispatchers.IO) { cityStore.lastUsedSlug() }
             val lastCity = cached.firstOrNull { it.slug == last }
-            val lastGeo = last?.let { withContext(Dispatchers.IO) { cityStore.geoJsonOf(it) } }
-            val restored = if (lastCity != null && lastGeo != null) {
-                val b = withContext(Dispatchers.Default) { GeoJsonBuildings.parse(lastGeo) }
+            val lastFile = last?.let { withContext(Dispatchers.IO) { cityStore.geoJsonFileOf(it) } }
+            val restored = if (lastCity != null && lastFile != null) {
+                val b = withContext(Dispatchers.Default) {
+                    runCatching { GeoJsonFile.buildings(lastFile) }.getOrDefault(emptyList())
+                }
                 if (b.isNotEmpty()) { activateCity(lastCity, b); true } else false
             } else false
             if (!restored) {
@@ -144,6 +169,21 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
             store.userSpots.collect {
                 userSpots = it
                 recompute(rank = true)
+            }
+        }
+        viewModelScope.launch {
+            store.allowRoaming.collect { allow -> _state.update { it.copy(allowRoaming = allow) } }
+        }
+        viewModelScope.launch {
+            store.lastUpdateCheck.collect { ts -> _state.update { it.copy(lastUpdateCheck = ts) } }
+        }
+        viewModelScope.launch {
+            // null = never asked → prompt; true → background-check (throttled); false → do nothing.
+            store.updateChecksEnabled.collect { enabled ->
+                _state.update {
+                    it.copy(updateChecksEnabled = enabled == true, promptUpdateOptIn = enabled == null)
+                }
+                if (enabled == true) maybeCheckForUpdate()
             }
         }
     }
@@ -215,7 +255,9 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     fun moveTo(p: LatLng) {
         center = p
         _state.update { it.copy(cameraTarget = p) }
-        recompute()
+        // Force a re-rank: the spot order now depends on distance from the map centre,
+        // not just the sun's position, so a moved centre must always refresh it.
+        recompute(rank = true)
     }
 
     fun onCameraTargetConsumed() = _state.update { it.copy(cameraTarget = null) }
@@ -252,7 +294,9 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
             activeBuildings = bundledBuildings
             _state.update { it.copy(sourceLabel = "Berlin · ${bundledBuildings.size} buildings") }
         }
-        recompute()
+        // Force a re-rank: the spot order now depends on distance from the map centre,
+        // not just the sun's position, so a moved centre must always refresh it.
+        recompute(rank = true)
     }
 
     /**
@@ -295,6 +339,10 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Search OpenStreetMap for a city/place to download. */
     fun searchCities(query: String) {
+        if (!_state.value.allowRoaming) {
+            _state.update { it.copy(cityStatus = "Network data is off — enable it in Settings to search.") }
+            return
+        }
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
             _state.update { it.copy(cityBusy = true, cityStatus = null) }
@@ -310,29 +358,115 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
 
     fun dismissCityPrompt() = _state.update { it.copy(promptCity = false) }
 
+    /** Toggle whether the network may be used for place search + city downloads. */
+    fun setAllowRoaming(value: Boolean) {
+        viewModelScope.launch { store.setAllowRoaming(value) }
+    }
+
+    // --- Update checking (opt-in) -----------------------------------------------------------
+
+    /** Persist the user's opt-in choice. The init collector reacts and runs a check if enabled. */
+    fun setUpdateChecks(enabled: Boolean) {
+        viewModelScope.launch { store.setUpdateChecksEnabled(enabled) }
+    }
+
+    /** Dismiss the first-run prompt without persisting a choice — it reappears next launch. */
+    fun dismissUpdateOptIn() = _state.update { it.copy(promptUpdateOptIn = false) }
+
+    /** Hide the update banner and remember the tag so the same release isn't shown again. */
+    fun dismissUpdate() {
+        val tag = _state.value.updateAvailable?.tag
+        _state.update { it.copy(updateAvailable = null) }
+        if (tag != null) viewModelScope.launch { store.setLastSeenTag(tag) }
+    }
+
+    /** Force a check from Settings — surfaces the result even if previously dismissed. */
+    fun checkForUpdatesNow() {
+        if (!_state.value.allowRoaming) return
+        runUpdateCheck(userInitiated = true)
+    }
+
+    /** Run a check only if enough time has passed since the last one (and the network is allowed). */
+    private suspend fun maybeCheckForUpdate() {
+        if (!_state.value.allowRoaming) return
+        val last = store.lastUpdateCheck.first()
+        if (System.currentTimeMillis() - last < UPDATE_CHECK_INTERVAL_MS) return
+        runUpdateCheck()
+    }
+
+    private fun runUpdateCheck(userInitiated: Boolean = false) {
+        viewModelScope.launch {
+            _state.update { it.copy(checkingForUpdate = true) }
+            val info = UpdateChecker.checkLatest(currentVersion())
+            store.setLastUpdateCheck(System.currentTimeMillis())
+            // A user-initiated check shows the result regardless; a background one suppresses a
+            // release the user already dismissed.
+            val seen = if (userInitiated) "" else store.lastSeenTag.first()
+            _state.update {
+                it.copy(
+                    checkingForUpdate = false,
+                    updateAvailable = info?.takeIf { u -> u.tag != seen },
+                )
+            }
+        }
+    }
+
+    private fun currentVersion(): String = runCatching {
+        val app = getApplication<Application>()
+        app.packageManager.getPackageInfo(app.packageName, 0).versionName.orEmpty()
+    }.getOrNull().orEmpty()
+
+    /** Re-download a city whose data is already cached (e.g. to get a newer dataset). */
+    fun redownloadCity(city: app.shadey.data.CachedCity) {
+        downloadCity(CityHit(city.name, city.lat, city.lng, city.south, city.west, city.north, city.east))
+    }
+
+    /** Cancel any in-progress city download. */
+    fun cancelDownload() {
+        downloadJob?.cancel()
+        downloadJob = null
+        _state.update { it.copy(cityBusy = false, cityStatus = null) }
+    }
+
     /** Download a searched city's buildings, cache them, and switch to it. */
     fun downloadCity(hit: CityHit) {
-        viewModelScope.launch {
-            _state.update { it.copy(cityBusy = true, cityStatus = "Downloading ${hit.name}…") }
+        if (!_state.value.allowRoaming) {
+            _state.update { it.copy(cityStatus = "Network data is off — enable it in Settings to download.") }
+            return
+        }
+        downloadJob = viewModelScope.launch {
+            _state.update { it.copy(cityBusy = true, cityStatus = "${hit.name} — connecting…") }
+            val slug = CityStore.slugOf(hit.name)
+            // Download into a staging file and only commit it over any existing city data once
+            // it has parsed to a non-empty building list — a failed re-download keeps the old data.
+            val staging = cityStore.stagingFileFor(slug)
             try {
                 val bbox = BuildingDownloader.clampedBbox(hit)
-                val geoJson = BuildingDownloader.downloadGeoJson(bbox)
-                val buildings = withContext(Dispatchers.Default) { GeoJsonBuildings.parse(geoJson) }
+                BuildingDownloader.downloadGeoJson(bbox, staging) { status ->
+                    _state.update { it.copy(cityStatus = "${hit.name} — $status") }
+                }
+                _state.update { it.copy(cityStatus = "${hit.name} — loading…") }
+                val buildings = withContext(Dispatchers.Default) { GeoJsonFile.buildings(staging) }
                 if (buildings.isEmpty()) {
+                    withContext(Dispatchers.IO) { staging.delete() }
                     _state.update { it.copy(cityBusy = false, cityStatus = "No buildings found there") }
                     return@launch
                 }
                 val city = CachedCity(
-                    CityStore.slugOf(hit.name), hit.name, hit.lat, hit.lng,
+                    slug, hit.name, hit.lat, hit.lng,
                     bbox[0], bbox[1], bbox[2], bbox[3], buildings.size,
                 )
-                val updated = withContext(Dispatchers.IO) { cityStore.save(city, geoJson); cityStore.list() }
+                val updated = withContext(Dispatchers.IO) { cityStore.commit(city, staging); cityStore.list() }
                 activateCity(city, buildings)
                 _state.update {
                     it.copy(cityBusy = false, cityStatus = null, citySearch = emptyList(),
                         cachedCities = updated)
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                staging.delete()
+                throw e // let coroutine machinery handle it; state already reset by cancelDownload()
             } catch (e: Exception) {
+                staging.delete()
                 _state.update { it.copy(cityBusy = false, cityStatus = e.message ?: "Download failed") }
             }
         }
@@ -341,9 +475,11 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     /** Switch to an already-downloaded city (works offline, instant). */
     fun useCity(slug: String) {
         viewModelScope.launch {
-            val geoJson = withContext(Dispatchers.IO) { cityStore.geoJsonOf(slug) } ?: return@launch
+            val file = withContext(Dispatchers.IO) { cityStore.geoJsonFileOf(slug) } ?: return@launch
             val city = withContext(Dispatchers.IO) { cityStore.list() }.firstOrNull { it.slug == slug } ?: return@launch
-            val buildings = withContext(Dispatchers.Default) { GeoJsonBuildings.parse(geoJson) }
+            val buildings = withContext(Dispatchers.Default) {
+                runCatching { GeoJsonFile.buildings(file) }.getOrDefault(emptyList())
+            }
             if (buildings.isEmpty()) return@launch
             withContext(Dispatchers.IO) { cityStore.setLastUsed(slug) }
             activateCity(city, buildings)
@@ -355,13 +491,17 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         bundledBuildings = buildings
         bundledRegion = BoundingBox(city.south, city.west, city.north, city.east)
         activeBuildings = buildings
+        activeCitySlug = city.slug
         accumulated.clear()
         shadowCache.clear()
         shadowCacheSunKey = null
         framesViewKey = null
         center = LatLng(city.lat, city.lng)
         _state.update {
-            it.copy(sourceLabel = "${city.name} · ${buildings.size} buildings", cameraTarget = center)
+            it.copy(
+                sourceLabel = "${city.name} · ${buildings.size} buildings",
+                cameraTarget = center,
+            )
         }
         recompute(rank = true, immediate = true)
     }
@@ -369,7 +509,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     private fun evaluatePoint(p: LatLng): SpotSunInfo {
         val now = instant()
         val sun = SolarCalculator.position(p, now)
-        val near = buildingsNear(p)
+        val near = buildingsNear(p, activeBuildings)
         val tmp = Spot("dropped", "Dropped pin", p.lat, p.lng, source = SpotSource.USER)
         return SpotSunInfo(tmp, engine.sunlightAt(p, sun, near), sun, engine.nextTransition(p, near, now)?.at)
     }
@@ -400,10 +540,15 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         recomputeJob?.cancel()
         recomputeJob = viewModelScope.launch {
             if (!immediate) delay(80) // debounce slider scrubbing and back-to-back camera events
+            // Surface a phase indicator in the status pill — the heavy castShadow loop below can
+            // take several seconds on first hit, and a silent UI looks frozen. Cancellation
+            // doesn't reach the clear-busy update at the end; that's fine because the next
+            // recompute (which caused the cancellation) re-sets busy=true on its first line.
+            _state.update { it.copy(busy = true, busyLabel = "Computing shade…") }
             val now = instant(_state.value)
             val spots = (curated + userSpots).distinctBy { it.id }
             // Snapshot mutable fields before the background thread — the sort comparator below
-            // must see a stable centre, and activeBuildings can be swapped on the main thread.
+            // must see a stable centre, and activeBuildings can change on the main thread.
             val frozenCenter = center
             val frozenBuildings = activeBuildings
             val result = withContext(Dispatchers.Default) {
@@ -419,17 +564,25 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                         shadowCache.getOrPut(b.id) { engine.castShadow(b, sun) ?: EMPTY_RING }
                             .takeIf { it.isNotEmpty() }
                     }
-                // Rank only when the sun moved, when forced, or on the very first pass.
-                val doRank = rank || rankedSunKey != sunKey || _state.value.ranked.isEmpty()
+                // Rank when the sun moved, the map centre moved (ranking is centre-relative
+                // now), when forced, or on the very first pass. The centre check matters even for
+                // unforced calls: a later plain recompute() (e.g. once buildings finish loading)
+                // can cancel and replace an in-flight forced re-rank, and it must still notice the
+                // origin changed rather than silently reusing a stale order.
+                val doRank = rank || rankedSunKey != sunKey || rankedCenter != frozenCenter ||
+                    _state.value.ranked.isEmpty()
                 val ranked = if (doRank) {
                     rankedSunKey = sunKey
-                    ranker.rank(spots, now) { buildingsNear(it.latLng, frozenBuildings, radiusMeters = 150.0) }
+                    rankedCenter = frozenCenter
+                    ranker.rank(spots, now, frozenCenter) { buildingsNear(it.latLng, frozenBuildings, radiusMeters = 150.0) }
                 } else null
                 rings to ranked
             }
             val (rings, ranked) = result
             _state.update {
                 it.copy(
+                    busy = false,
+                    busyLabel = "",
                     shadowsGeoJson = GeoJsonWriter.shadows(rings),
                     ranked = ranked ?: it.ranked,
                     spotsGeoJson = if (ranked != null) GeoJsonWriter.spots(ranked) else it.spotsGeoJson,
@@ -440,7 +593,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Buildings to cast shadows for: those in view, closest first, capped for performance. */
+    /** Buildings to cast shadows for in the live view: those in view, closest first, capped. */
     private fun inViewBuildings(c: LatLng, buildings: List<Building>): List<Building> =
         buildingsInView(c, buildings)
             .sortedBy { distanceSq(c, it.centroid()) }
@@ -467,6 +620,11 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
      * Precompute a shadow + spot-colour frame for every daylight bucket of the current day, for
      * the buildings in the current view. Runs once per view (skipped if already built) and is
      * cancelled when the view changes. After it completes, [setTime] is a pure lookup.
+     *
+     * A 2-second settle delay before the heavy computation begins ensures rapid panning (which
+     * cancels and restarts this job on every camera-idle event) generates no garbage at all —
+     * only a stable view triggers actual work, so the GC churn from creating/discarding 144
+     * per-frame shadow JSON strings on every pan is eliminated.
      */
     private fun precomputeFrames() {
         val key = viewKey()
@@ -477,6 +635,11 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         val date = _state.value.date
         val spots = (curated + userSpots).distinctBy { it.id }
         frameJob = viewModelScope.launch(Dispatchers.Default) {
+            // Wait for the view to settle before doing any expensive allocation.
+            // If the user is still panning this job will be cancelled before the delay fires,
+            // producing zero garbage. Only a stable view proceeds to actual frame computation.
+            delay(2_000L)
+            if (!isActive) return@launch
             val inView = inViewBuildings(frozenCenter, frozenBuildings)
             val near = spots.associate { it.id to buildingsNear(it.latLng, frozenBuildings, radiusMeters = 150.0) }
             val shadows = HashMap<Int, String>()
@@ -511,8 +674,8 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun loadBundledBuildings(): List<Building> = withContext(Dispatchers.IO) {
         runCatching {
             getApplication<Application>().assets.open("data/berlin_buildings.geojson")
-                .bufferedReader().use { it.readText() }
-        }.getOrNull()?.let { GeoJsonBuildings.parse(it) } ?: emptyList()
+                .use { GeoJsonFile.buildings(it) }
+        }.getOrDefault(emptyList())
     }
 
     private suspend fun loadCurated(): List<Spot> = withContext(Dispatchers.IO) {
@@ -522,7 +685,6 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         }.getOrNull()?.let { SpotsJson.parse(it) } ?: emptyList()
     }
 
-    // Closest N buildings only — distant ones cast negligible shadows and dominate CPU time.
     private fun distanceSq(a: LatLng, b: LatLng): Double {
         val dLat = a.lat - b.lat
         val dLng = a.lng - b.lng
@@ -530,11 +692,17 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private companion object {
+        // Closest N buildings only — distant ones cast negligible shadows and dominate CPU time.
         const val MAX_SHADOWS = 600
         val EMPTY_RING = emptyList<LatLng>()
         const val MIN_BUNDLED_BUILDINGS = 1000
         const val MAX_CACHE_ENTRIES = 6000
         const val MAX_ACCUMULATED = 8000
-        const val FRAME_STEP_MIN = 10
+        // Background update checks run at most once per day.
+        const val UPDATE_CHECK_INTERVAL_MS = 24L * 60 * 60 * 1000
+        // 15-minute buckets → 96 frames per day instead of 144. Combined with the 2-second
+        // settle delay in precomputeFrames(), this cuts per-run garbage and the sustained GC
+        // pressure from rapid panning is eliminated entirely.
+        const val FRAME_STEP_MIN = 15
     }
 }

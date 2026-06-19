@@ -77,6 +77,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import app.shadey.core.model.Sunlight
 import app.shadey.core.model.SpotSource
 import app.shadey.core.rank.SpotSunInfo
+import app.shadey.core.shade.ShadowEngine
 import app.shadey.data.CityHit
 import app.shadey.data.Geocoder
 import app.shadey.data.UpdateInfo
@@ -375,11 +376,11 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
                 }
                 // Dropped pin / selected spot card (shown when relevant)
                 state.dropped?.let { pin ->
-                    DroppedCard(pin, zone, onSave = vm::saveDropped, onDismiss = vm::clearDropped)
+                    DroppedCard(pin, state.sunnyWindow, zone, onSave = vm::saveDropped, onDismiss = vm::clearDropped)
                 }
                 state.selected?.let { info ->
                     SelectedCard(
-                        info, zone,
+                        info, state.sunnyWindow, zone,
                         onRemove = { vm.removeSpot(info.spot.id); vm.selectSpot(null) },
                         onDismiss = { vm.selectSpot(null) },
                     )
@@ -676,7 +677,13 @@ private fun SpotRow(info: SpotSunInfo, zone: ZoneId, selected: Boolean, onClick:
 }
 
 @Composable
-private fun DroppedCard(pin: DroppedPin, zone: ZoneId, onSave: (String) -> Unit, onDismiss: () -> Unit) {
+private fun DroppedCard(
+    pin: DroppedPin,
+    sunnyWindow: ShadowEngine.SunWindow?,
+    zone: ZoneId,
+    onSave: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
     var name by remember(pin) { mutableStateOf("") }
     Card(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
         Column(Modifier.padding(12.dp)) {
@@ -691,6 +698,10 @@ private fun DroppedCard(pin: DroppedPin, zone: ZoneId, onSave: (String) -> Unit,
                 Text(statusLine(info, zone), style = MaterialTheme.typography.bodyMedium)
                 Text(sunDetail(info), style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                sunnyWindow?.let { w ->
+                    Text(sunnyWindowLabel(w, zone), style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                }
             }
             Spacer(Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -712,7 +723,13 @@ private fun DroppedCard(pin: DroppedPin, zone: ZoneId, onSave: (String) -> Unit,
 }
 
 @Composable
-private fun SelectedCard(info: SpotSunInfo, zone: ZoneId, onRemove: () -> Unit, onDismiss: () -> Unit) {
+private fun SelectedCard(
+    info: SpotSunInfo,
+    sunnyWindow: ShadowEngine.SunWindow?,
+    zone: ZoneId,
+    onRemove: () -> Unit,
+    onDismiss: () -> Unit,
+) {
     Card(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
         Column(Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -730,6 +747,10 @@ private fun SelectedCard(info: SpotSunInfo, zone: ZoneId, onRemove: () -> Unit, 
             }
             Text(sunDetail(info), style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+            sunnyWindow?.let { w ->
+                Text(sunnyWindowLabel(w, zone), style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+            }
             if (info.spot.source == SpotSource.USER) {
                 TextButton(onClick = onRemove) { Text("Remove spot") }
             }
@@ -1018,6 +1039,12 @@ private fun formatRelative(epochMs: Long): String {
 private fun formatInstant(instant: Instant, zone: ZoneId): String {
     val t = instant.atZone(zone).toLocalTime()
     return "%02d:%02d".format(t.hour, t.minute)
+}
+
+private fun sunnyWindowLabel(window: ShadowEngine.SunWindow, zone: ZoneId): String {
+    val start = formatInstant(window.start, zone)
+    return if (window.end != null) "Sunny $start–${formatInstant(window.end, zone)} today"
+    else "Sunny from $start today"
 }
 
 private fun statusLine(info: SpotSunInfo, zone: ZoneId): String = when (info.sunlight) {

@@ -9,6 +9,9 @@ https://github.com/phrag/shadey/releases.
 - Long-press anywhere on the map to drop a pin and save it as a spot — a
   plain tap no longer does this, so panning and tapping spots/the dropped-pin
   card stay unaffected.
+- The dropped-pin and selected-spot cards now show the next upcoming sunny
+  spell today (e.g. "Sunny 14:30–17:15 today") when the spot is currently
+  shaded or dark, not just the next single change.
 
 **Interface**
 - A small chip in the title pill now shows live cloud cover and UV index for

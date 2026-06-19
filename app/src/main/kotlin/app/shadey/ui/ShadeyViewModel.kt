@@ -42,6 +42,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
@@ -62,6 +63,9 @@ data class ShadeyUiState(
     val ranked: List<SpotSunInfo> = emptyList(),
     val selectedId: String? = null,
     val dropped: DroppedPin? = null,
+    /** The next upcoming sunny spell today for the dropped pin / selected spot, if it's currently
+     *  shaded or dark. Null when there isn't one (or the point is already in the sun). */
+    val sunnyWindow: ShadowEngine.SunWindow? = null,
     val shadowsGeoJson: String = GeoJsonWriter.emptyCollection(),
     val spotsGeoJson: String = GeoJsonWriter.emptyCollection(),
     val pinGeoJson: String = GeoJsonWriter.emptyCollection(),
@@ -142,6 +146,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     private var settleJob: Job? = null
     private var weatherJob: Job? = null
     private var routeJob: Job? = null
+    private var sunnyWindowJob: Job? = null
     // Keyed by ~1 km grid cell + hour, so panning within an area or scrubbing the time slider
     // doesn't re-fetch — cloud cover barely changes at that resolution within an hour.
     private val weatherCache = java.util.concurrent.ConcurrentHashMap<String, WeatherSnapshot>()
@@ -253,7 +258,16 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         recompute(rank = true)
     }
 
-    fun selectSpot(id: String?) = _state.update { it.copy(selectedId = id, dropped = null) }
+    fun selectSpot(id: String?) {
+        _state.update { it.copy(selectedId = id, dropped = null) }
+        val selected = _state.value.selected
+        if (selected == null) {
+            sunnyWindowJob?.cancel()
+            _state.update { it.copy(sunnyWindow = null) }
+        } else {
+            scheduleSunnyWindow(selected.spot.latLng, selected.sunlight)
+        }
+    }
 
     fun onMapClick(p: LatLng) {
         viewModelScope.launch {
@@ -265,6 +279,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                     pinGeoJson = GeoJsonWriter.point(p, GeoJsonWriter.colorFor(info.sunlight)),
                 )
             }
+            scheduleSunnyWindow(p, info.sunlight)
         }
     }
 
@@ -441,8 +456,10 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onCameraTargetConsumed() = _state.update { it.copy(cameraTarget = null) }
 
-    fun clearDropped() =
-        _state.update { it.copy(dropped = null, pinGeoJson = GeoJsonWriter.emptyCollection()) }
+    fun clearDropped() {
+        sunnyWindowJob?.cancel()
+        _state.update { it.copy(dropped = null, sunnyWindow = null, pinGeoJson = GeoJsonWriter.emptyCollection()) }
+    }
 
     fun saveDropped(name: String) {
         val d = _state.value.dropped ?: return
@@ -716,6 +733,24 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         val near = buildingsNear(p, activeBuildings)
         val tmp = Spot("dropped", "Dropped pin", p.lat, p.lng, source = SpotSource.USER)
         return SpotSunInfo(tmp, engine.sunlightAt(p, sun, near), sun, engine.nextTransition(p, near, now)?.at)
+    }
+
+    /** Looks ahead for the next sunny spell today at [p], unless it's already sunny. */
+    private fun scheduleSunnyWindow(p: LatLng, sunlight: Sunlight) {
+        sunnyWindowJob?.cancel()
+        _state.update { it.copy(sunnyWindow = null) }
+        if (sunlight == Sunlight.SUN) return
+        sunnyWindowJob = viewModelScope.launch {
+            val now = instant()
+            val near = buildingsNear(p)
+            val window = withContext(Dispatchers.Default) {
+                val endOfDay = now.atZone(zone).toLocalDate().plusDays(1).atStartOfDay(zone).toInstant()
+                val within = Duration.between(now, endOfDay)
+                if (within.isZero || within.isNegative) null
+                else engine.nextSunWindow(p, near, now, within)
+            }
+            _state.update { it.copy(sunnyWindow = window) }
+        }
     }
 
     private fun buildingsNear(p: LatLng, buildings: List<Building> = activeBuildings, radiusMeters: Double = 800.0): List<Building> {

@@ -73,9 +73,32 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           cp app/build/outputs/apk/debug/app-debug.apk shadey-${VERSION}.apk
 
+      - name: Extract release notes from CHANGELOG
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          # Pull the lines under "## <version>" up to (but not including) the next "## " heading.
+          awk -v hdr="## $VERSION" '
+            !grab {
+              if (substr($0, 1, length(hdr)) == hdr) {
+                rest = substr($0, length(hdr) + 1)
+                if (rest == "" || rest ~ /^[ \t\r]/) { grab = 1; next }
+              }
+            }
+            grab && /^## / { exit }
+            grab { print }
+          ' CHANGELOG.md > release-notes.md
+          # Fall back to a minimal body if the version has no CHANGELOG section yet.
+          if [ ! -s release-notes.md ]; then
+            echo "Shadey ${VERSION}" > release-notes.md
+          fi
+          echo "----- release notes for ${VERSION} -----"
+          cat release-notes.md
+
       - name: Attach APK to release
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
+          body_path: release-notes.md
           files: shadey-*.apk

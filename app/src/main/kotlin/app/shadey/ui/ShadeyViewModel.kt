@@ -24,6 +24,8 @@ import app.shadey.data.GeoJsonFile
 import app.shadey.data.SavedSpotsStore
 import app.shadey.data.UpdateChecker
 import app.shadey.data.UpdateInfo
+import app.shadey.data.WeatherClient
+import app.shadey.data.WeatherSnapshot
 import app.shadey.data.centroid
 import app.shadey.map.ClosedBounds
 import app.shadey.map.GeoJsonWriter
@@ -80,6 +82,8 @@ data class ShadeyUiState(
     val updateChecksEnabled: Boolean = false,
     val lastUpdateCheck: Long = 0L,
     val checkingForUpdate: Boolean = false,
+    /** Live cloud cover/UV for the map centre, when known. Annotation only — never affects shade. */
+    val weather: WeatherSnapshot? = null,
 ) {
     val selected: SpotSunInfo? get() = ranked.firstOrNull { it.spot.id == selectedId }
 }
@@ -114,6 +118,10 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     private var buildingsJob: Job? = null
     private var frameJob: Job? = null
     private var settleJob: Job? = null
+    private var weatherJob: Job? = null
+    // Keyed by ~1 km grid cell + hour, so panning within an area or scrubbing the time slider
+    // doesn't re-fetch — cloud cover barely changes at that resolution within an hour.
+    private val weatherCache = java.util.concurrent.ConcurrentHashMap<String, WeatherSnapshot>()
 
     // Precomputed "shadow movie" for the current view + date: a shadow (and spot-colour) frame
     // per FRAME_STEP-minute bucket of the day. Once built, scrubbing the time slider is a pure
@@ -297,6 +305,31 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         // Force a re-rank: the spot order now depends on distance from the map centre,
         // not just the sun's position, so a moved centre must always refresh it.
         recompute(rank = true)
+        fetchWeather(newCenter)
+    }
+
+    /** Fetch (or reuse a cached) cloud cover/UV reading for [p]. Annotation only — never gates shade. */
+    private fun fetchWeather(p: LatLng) {
+        if (!_state.value.allowRoaming) return
+        val key = weatherKey(p)
+        weatherCache[key]?.let { cached ->
+            _state.update { it.copy(weather = cached) }
+            return
+        }
+        weatherJob?.cancel()
+        weatherJob = viewModelScope.launch {
+            delay(500) // debounce rapid panning
+            val snapshot = WeatherClient.current(p.lat, p.lng) ?: return@launch
+            weatherCache[key] = snapshot
+            _state.update { it.copy(weather = snapshot) }
+        }
+    }
+
+    private fun weatherKey(p: LatLng): String {
+        val gridLat = Math.round(p.lat * 100) // ~1.1 km cells
+        val gridLng = Math.round(p.lng * 100)
+        val hour = java.time.LocalDateTime.now().hour
+        return "${gridLat}_${gridLng}_$hour"
     }
 
     /**

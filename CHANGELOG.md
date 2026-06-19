@@ -10,6 +10,13 @@ https://github.com/phrag/shadey/releases.
   plain tap no longer does this, so panning and tapping spots/the dropped-pin
   card stay unaffected.
 
+**Interface**
+- A small chip in the title pill now shows live cloud cover and UV index for
+  the map centre (via Open-Meteo), so a sunny-by-geometry spot that's
+  actually overcast doesn't look misleadingly bright. Annotation only — it
+  never changes the sun/shade verdict. Gated by the existing "Use network
+  for search & downloads" setting.
+
 ## 1.1.0
 
 **Stability**

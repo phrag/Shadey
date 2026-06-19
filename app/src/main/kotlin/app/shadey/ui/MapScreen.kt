@@ -76,6 +76,7 @@ import app.shadey.core.rank.SpotSunInfo
 import app.shadey.data.CityHit
 import app.shadey.data.Geocoder
 import app.shadey.data.UpdateInfo
+import app.shadey.data.WeatherSnapshot
 import kotlinx.coroutines.delay
 import java.time.Instant
 import java.time.ZoneId
@@ -256,6 +257,13 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                         )
+                        state.weather?.let { w ->
+                            Text(
+                                weatherLabel(w),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                            )
+                        }
                     }
                     if (state.busy) {
                         Spacer(Modifier.width(8.dp))
@@ -890,6 +898,17 @@ private fun sunlightColor(s: Sunlight): Color = when (s) {
 }
 
 private fun formatTime(minutes: Int): String = "%02d:%02d".format(minutes / 60, minutes % 60)
+
+private fun weatherLabel(w: WeatherSnapshot): String {
+    val clearPct = 100 - w.cloudCoverPct
+    val emoji = when {
+        w.cloudCoverPct < 20 -> "☀"
+        w.cloudCoverPct < 60 -> "⛅"
+        else -> "☁"
+    }
+    val uv = if (w.uvIndex >= 3) " · UV ${w.uvIndex.toInt()}" else ""
+    return "$emoji $clearPct% clear$uv"
+}
 
 private fun formatRelative(epochMs: Long): String {
     val mins = (System.currentTimeMillis() - epochMs) / 60_000

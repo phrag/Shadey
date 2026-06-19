@@ -21,6 +21,8 @@ import app.shadey.data.CityHit
 import app.shadey.data.CityStore
 import app.shadey.data.Geocoder
 import app.shadey.data.GeoJsonFile
+import app.shadey.data.RouteOption
+import app.shadey.data.Router
 import app.shadey.data.SavedSpotsStore
 import app.shadey.data.UpdateChecker
 import app.shadey.data.UpdateInfo
@@ -46,6 +48,12 @@ import java.time.LocalTime
 import java.time.ZoneId
 
 data class DroppedPin(val lat: Double, val lng: Double, val info: SpotSunInfo?)
+
+/** A run of consecutive route samples sharing the same sun/shade state. */
+data class RouteSegment(val coords: List<LatLng>, val sunlight: Sunlight)
+
+/** A walking route scored by how much of it is shaded right now. */
+data class ScoredRoute(val option: RouteOption, val shadeRatio: Double, val segments: List<RouteSegment>)
 
 data class ShadeyUiState(
     val date: LocalDate = LocalDate.now(),
@@ -84,8 +92,19 @@ data class ShadeyUiState(
     val checkingForUpdate: Boolean = false,
     /** Live cloud cover/UV for the map centre, when known. Annotation only — never affects shade. */
     val weather: WeatherSnapshot? = null,
+    // Shady route planner.
+    /** True from tapping the route FAB until the route is cancelled — taps then set origin/dest. */
+    val routeActive: Boolean = false,
+    val routeOrigin: LatLng? = null,
+    val routeDest: LatLng? = null,
+    val routeOptions: List<ScoredRoute> = emptyList(),
+    val selectedRouteIdx: Int = 0,
+    val routeBusy: Boolean = false,
+    val routeStatus: String? = null,
+    val routeGeoJson: String = GeoJsonWriter.emptyCollection(),
 ) {
     val selected: SpotSunInfo? get() = ranked.firstOrNull { it.spot.id == selectedId }
+    val selectedRoute: ScoredRoute? get() = routeOptions.getOrNull(selectedRouteIdx)
 }
 
 class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
@@ -119,6 +138,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     private var frameJob: Job? = null
     private var settleJob: Job? = null
     private var weatherJob: Job? = null
+    private var routeJob: Job? = null
     // Keyed by ~1 km grid cell + hour, so panning within an area or scrubbing the time slider
     // doesn't re-fetch — cloud cover barely changes at that resolution within an hour.
     private val weatherCache = java.util.concurrent.ConcurrentHashMap<String, WeatherSnapshot>()
@@ -248,6 +268,154 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     fun goToPlace(hit: app.shadey.data.CityHit) = moveTo(LatLng(hit.lat, hit.lng))
 
     fun dropPinAtCenter() = onMapClick(center)
+
+    // --- Shady route planner -----------------------------------------------------------------
+
+    /** Enter route-planning mode: the next two map taps set the origin, then the destination. */
+    fun startRoutePlanning() {
+        routeJob?.cancel()
+        _state.update {
+            it.copy(
+                routeActive = true, routeOrigin = null, routeDest = null,
+                routeOptions = emptyList(), selectedRouteIdx = 0, routeBusy = false,
+                routeStatus = null, routeGeoJson = GeoJsonWriter.emptyCollection(),
+                pinGeoJson = GeoJsonWriter.emptyCollection(),
+            )
+        }
+    }
+
+    /** Leave route-planning mode and clear the route + endpoint pins off the map. */
+    fun cancelRoutePlanning() {
+        routeJob?.cancel()
+        _state.update {
+            it.copy(
+                routeActive = false, routeOrigin = null, routeDest = null,
+                routeOptions = emptyList(), selectedRouteIdx = 0, routeBusy = false,
+                routeStatus = null, routeGeoJson = GeoJsonWriter.emptyCollection(),
+                pinGeoJson = GeoJsonWriter.emptyCollection(),
+            )
+        }
+    }
+
+    /** A tap on the map while route-planning is active: first sets the origin, then the destination. */
+    fun onRouteMapTap(p: LatLng) {
+        val s = _state.value
+        if (!s.routeActive) return
+        when {
+            s.routeOrigin == null -> _state.update {
+                it.copy(routeOrigin = p, pinGeoJson = GeoJsonWriter.points(listOf(p to ROUTE_ORIGIN_COLOR)))
+            }
+            s.routeDest == null -> {
+                val origin = s.routeOrigin!! // guaranteed by the branch above having been skipped
+                _state.update {
+                    it.copy(
+                        routeDest = p,
+                        pinGeoJson = GeoJsonWriter.points(
+                            listOf(origin to ROUTE_ORIGIN_COLOR, p to ROUTE_DEST_COLOR),
+                        ),
+                    )
+                }
+                fetchRoutes()
+            }
+            // Both already set — a further tap starts a fresh pick rather than being ignored.
+            else -> _state.update {
+                it.copy(
+                    routeOrigin = p, routeDest = null, routeOptions = emptyList(), selectedRouteIdx = 0,
+                    routeStatus = null, routeGeoJson = GeoJsonWriter.emptyCollection(),
+                    pinGeoJson = GeoJsonWriter.points(listOf(p to ROUTE_ORIGIN_COLOR)),
+                )
+            }
+        }
+    }
+
+    /** Cycle to the next walking alternative (wraps around). */
+    fun nextRouteOption() {
+        val s = _state.value
+        if (s.routeOptions.size < 2) return
+        val idx = (s.selectedRouteIdx + 1) % s.routeOptions.size
+        _state.update { it.copy(selectedRouteIdx = idx, routeGeoJson = routeGeoJsonFor(s.routeOptions[idx])) }
+    }
+
+    private fun fetchRoutes() {
+        val s = _state.value
+        val origin = s.routeOrigin ?: return
+        val dest = s.routeDest ?: return
+        if (!s.allowRoaming) {
+            _state.update { it.copy(routeStatus = "Network data is off — enable it in Settings to plan a route.") }
+            return
+        }
+        routeJob?.cancel()
+        routeJob = viewModelScope.launch {
+            _state.update { it.copy(routeBusy = true, routeStatus = null) }
+            val raw = runCatching { Router.walkingRoutes(origin, dest) }.getOrDefault(emptyList())
+            if (raw.isEmpty()) {
+                _state.update { it.copy(routeBusy = false, routeStatus = "No walking route found between those points") }
+                return@launch
+            }
+            val now = instant()
+            val frozenBuildings = activeBuildings
+            val scored = withContext(Dispatchers.Default) { raw.map { scoreRoute(it, now, frozenBuildings) } }
+            // Shadiest first — that's the point of the feature.
+            val best = scored.indices.maxByOrNull { scored[it].shadeRatio } ?: 0
+            _state.update {
+                it.copy(
+                    routeBusy = false, routeOptions = scored, selectedRouteIdx = best,
+                    routeGeoJson = routeGeoJsonFor(scored[best]),
+                )
+            }
+        }
+    }
+
+    private fun routeGeoJsonFor(scored: ScoredRoute) =
+        GeoJsonWriter.route(scored.segments.map { it.coords to it.sunlight })
+
+    /** Samples every [ROUTE_SAMPLE_STEP_M] along the route and reuses the shadow engine to score it. */
+    private fun scoreRoute(route: RouteOption, now: Instant, buildings: List<Building>): ScoredRoute {
+        val samples = sampleAlong(route.coords, ROUTE_SAMPLE_STEP_M)
+        val segments = ArrayList<RouteSegment>()
+        var run = ArrayList<LatLng>()
+        var runState: Sunlight? = null
+        var sunCount = 0
+        for (p in samples) {
+            val state = engine.sunlightAt(p, now, buildingsNear(p, buildings, radiusMeters = 200.0))
+            if (state == Sunlight.SUN) sunCount++
+            if (runState != null && state != runState) {
+                run.add(p) // shared vertex so adjacent coloured segments connect with no gap
+                segments.add(RouteSegment(run, runState))
+                run = ArrayList()
+            }
+            run.add(p)
+            runState = state
+        }
+        if (run.size >= 2 && runState != null) segments.add(RouteSegment(run, runState))
+        val shadeRatio = if (samples.isEmpty()) 0.0 else 1.0 - sunCount.toDouble() / samples.size
+        return ScoredRoute(route, shadeRatio, segments)
+    }
+
+    /** Resamples a polyline at a fixed step (metres), using one local projection for the whole route. */
+    private fun sampleAlong(coords: List<LatLng>, stepMeters: Double): List<LatLng> {
+        if (coords.size < 2) return coords
+        val proj = app.shadey.core.geo.LocalProjection(coords.first())
+        val pts = coords.map(proj::toLocal)
+        val samples = ArrayList<LatLng>()
+        samples.add(coords.first())
+        var traveled = 0.0
+        var nextMark = stepMeters
+        for (i in 1 until pts.size) {
+            val a = pts[i - 1]
+            val b = pts[i]
+            val segLen = (b - a).length()
+            if (segLen <= 1e-6) continue
+            while (traveled + segLen >= nextMark) {
+                val t = (nextMark - traveled) / segLen
+                samples.add(proj.toLatLng(a + (b - a) * t))
+                nextMark += stepMeters
+            }
+            traveled += segLen
+        }
+        if (samples.last() != coords.last()) samples.add(coords.last())
+        return samples
+    }
 
     /**
      * Returns the current map viewport expanded by 50% on each side as a viewbox
@@ -733,6 +901,11 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         const val MAX_ACCUMULATED = 8000
         // Background update checks run at most once per day.
         const val UPDATE_CHECK_INTERVAL_MS = 24L * 60 * 60 * 1000
+        // Route shade-scoring sample spacing — fine enough to catch individual buildings'
+        // shadows without sampling so densely that scoring a multi-km walk gets slow.
+        const val ROUTE_SAMPLE_STEP_M = 25.0
+        const val ROUTE_ORIGIN_COLOR = "#2ECC71"
+        const val ROUTE_DEST_COLOR = "#E74C3C"
         // 15-minute buckets → 96 frames per day instead of 144. Combined with the 2-second
         // settle delay in precomputeFrames(), this cuts per-run garbage and the sustained GC
         // pressure from rapid panning is eliminated entirely.

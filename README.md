@@ -118,6 +118,7 @@ services — only for the specific features listed below.
 | **Place search** | Only when you type in the search box | `nominatim.openstreetmap.org` (OSM Nominatim) | Your search text, plus the current map area to bias results | To find a place to jump to or download |
 | **Download a city** | Only when you tap **Download** on a result | `overpass-api.de`, falling back to `overpass.kumi.systems` | The bounding box (≈8 × 8 km) of the chosen area | To fetch that city's building footprints + heights so its shade works offline afterwards |
 | **Cloud cover chip** | Automatically when the map settles on a new area, if you're online | `api.open-meteo.com` (Open-Meteo) | The map centre's coordinates, rounded to ~1 km | To show current cloud cover/UV as an at-a-glance sun-strength cue — purely informational, never affects the shadow geometry |
+| **Shady route planner** | Only when you tap the route button and pick a start + destination | `router.project-osrm.org` (OSRM demo server) | The two tapped coordinates | To fetch walking directions, which Shadey then scores for shade entirely on-device |
 
 A few things worth being explicit about:
 
@@ -131,10 +132,10 @@ A few things worth being explicit about:
 - City downloads only ever contact the two community Overpass mirrors above
   (`overpass.kumi.systems` is tried only if `overpass-api.de` is unreachable).
 - A Settings switch — **"Use network for search & downloads"** — turns the
-  place-search (Nominatim), city-download (Overpass) and cloud-cover
-  (Open-Meteo) requests off entirely. The base map still loads when you're
-  online; this switch controls building, search and weather data only, not
-  the map tiles.
+  place-search (Nominatim), city-download (Overpass), cloud-cover
+  (Open-Meteo) and route-planning (OSRM) requests off entirely. The base map
+  still loads when you're online; this switch controls building, search,
+  weather and routing data only, not the map tiles.
 
 ### Offline mode
 

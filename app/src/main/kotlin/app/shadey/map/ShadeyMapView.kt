@@ -27,6 +27,7 @@ import org.maplibre.android.maps.Style
 import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.FillLayer
+import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.sources.GeoJsonSource
 
@@ -52,6 +53,7 @@ fun ShadeyMap(
     shadowsGeoJson: String,
     spotsGeoJson: String,
     pinGeoJson: String,
+    routeGeoJson: String,
     cameraTarget: CoreLatLng?,
     onMapClick: (CoreLatLng) -> Unit,
     onMapLongClick: (CoreLatLng) -> Unit,
@@ -173,6 +175,9 @@ fun ShadeyMap(
     LaunchedEffect(handle, pinGeoJson) {
         handle?.style?.getSourceAs<GeoJsonSource>("pin")?.setGeoJson(pinGeoJson)
     }
+    LaunchedEffect(handle, routeGeoJson) {
+        handle?.style?.getSourceAs<GeoJsonSource>("route")?.setGeoJson(routeGeoJson)
+    }
     LaunchedEffect(handle, cameraTarget) {
         val h = handle ?: return@LaunchedEffect
         val target = cameraTarget ?: return@LaunchedEffect
@@ -186,6 +191,7 @@ private object MapStyles {
         style.addSource(GeoJsonSource("shadows", GeoJsonWriter.emptyCollection()))
         style.addSource(GeoJsonSource("spots", GeoJsonWriter.emptyCollection()))
         style.addSource(GeoJsonSource("pin", GeoJsonWriter.emptyCollection()))
+        style.addSource(GeoJsonSource("route", GeoJsonWriter.emptyCollection()))
 
         // Ground shadows — inserted below road labels so they show on top of ground/parks
         // but don't cover street text. "road_label" is a stable layer in the Liberty style.
@@ -208,7 +214,17 @@ private object MapStyles {
                 PropertyFactory.circleStrokeWidth(2f),
             ),
         )
-        // Dropped pin (drawn on top).
+        // Shady-route line, coloured per same-sunlight run.
+        style.addLayer(
+            LineLayer("route-layer", "route").withProperties(
+                PropertyFactory.lineColor(Expression.get("color")),
+                PropertyFactory.lineWidth(6f),
+                PropertyFactory.lineCap("round"),
+                PropertyFactory.lineJoin("round"),
+                PropertyFactory.lineOpacity(0.85f),
+            ),
+        )
+        // Dropped pin / route endpoints (drawn on top).
         style.addLayer(
             CircleLayer("pin-layer", "pin").withProperties(
                 PropertyFactory.circleRadius(9f),

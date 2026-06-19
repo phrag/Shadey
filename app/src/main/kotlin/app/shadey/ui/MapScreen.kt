@@ -29,6 +29,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
@@ -307,6 +308,19 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
                     Icon(Icons.Filled.Public, "Cities")
                 }
             }
+            Surface(
+                shape = CircleShape,
+                color = if (state.routeActive) MaterialTheme.colorScheme.primaryContainer
+                        else MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+                tonalElevation = 3.dp, shadowElevation = 3.dp,
+            ) {
+                IconButton(onClick = { if (state.routeActive) vm.cancelRoutePlanning() else vm.startRoutePlanning() }) {
+                    Icon(
+                        if (state.routeActive) Icons.Filled.Close else Icons.Filled.DirectionsWalk,
+                        "Shadiest route",
+                    )
+                }
+            }
             FloatingActionButton(
                 onClick = {
                     if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)
@@ -347,6 +361,10 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
                         onOpen = { uriHandler.openUri(info.htmlUrl) },
                         onDismiss = vm::dismissUpdate,
                     )
+                }
+                // Shady route planner (shown while active — picking points or showing a result)
+                if (state.routeActive) {
+                    RouteCard(state, onNext = vm::nextRouteOption, onCancel = vm::cancelRoutePlanning)
                 }
                 // Dropped pin / selected spot card (shown when relevant)
                 state.dropped?.let { pin ->
@@ -611,9 +629,12 @@ private fun ShadeyMapLayer(state: ShadeyUiState, vm: ShadeyViewModel) {
         shadowsGeoJson = state.shadowsGeoJson,
         spotsGeoJson = state.spotsGeoJson,
         pinGeoJson = state.pinGeoJson,
+        routeGeoJson = state.routeGeoJson,
         cameraTarget = state.cameraTarget,
-        onMapClick = {}, // a plain tap no longer drops a pin — long-press does
-        onMapLongClick = vm::onMapClick,
+        // While route-planning is active, taps set the origin/destination and long-press is
+        // suspended (so you can't accidentally drop a spot pin while picking route points).
+        onMapClick = { p -> if (state.routeActive) vm.onRouteMapTap(p) },
+        onMapLongClick = { p -> if (!state.routeActive) vm.onMapClick(p) },
         onCameraIdle = vm::onCameraIdle,
         onBuildingsQueried = vm::onBuildingsQueried,
         onCameraTargetConsumed = vm::onCameraTargetConsumed,
@@ -704,6 +725,54 @@ private fun SelectedCard(info: SpotSunInfo, zone: ZoneId, onRemove: () -> Unit, 
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
             if (info.spot.source == SpotSource.USER) {
                 TextButton(onClick = onRemove) { Text("Remove spot") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RouteCard(state: ShadeyUiState, onNext: () -> Unit, onCancel: () -> Unit) {
+    Card(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
+        Column(Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Filled.DirectionsWalk, null, Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("Shadiest route", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.weight(1f))
+                IconButton(onClick = onCancel) { Icon(Icons.Filled.Close, "Cancel route") }
+            }
+            val route = state.selectedRoute
+            when {
+                state.routeBusy -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Finding the shadiest path…", style = MaterialTheme.typography.bodyMedium)
+                }
+                state.routeStatus != null -> Text(
+                    state.routeStatus,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                route != null -> {
+                    val km = "%.1f".format(route.option.distanceMeters / 1000)
+                    val mins = (route.option.durationSeconds / 60).roundToInt()
+                    Text(
+                        "${(route.shadeRatio * 100).roundToInt()}% shade · $km km · $mins min",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    if (state.routeOptions.size > 1) {
+                        TextButton(onClick = onNext, modifier = Modifier.padding(top = 4.dp)) {
+                            Text("Try another route")
+                        }
+                    }
+                }
+                state.routeOrigin == null ->
+                    Text("Tap the map to set your start point", style = MaterialTheme.typography.bodyMedium)
+                else ->
+                    Text("Now tap your destination", style = MaterialTheme.typography.bodyMedium)
             }
         }
     }

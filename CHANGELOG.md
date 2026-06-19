@@ -17,6 +17,13 @@ https://github.com/phrag/shadey/releases.
   never changes the sun/shade verdict. Gated by the existing "Use network
   for search & downloads" setting.
 
+**Routes**
+- New shady-route planner: tap the walking-person button, tap a start and a
+  destination, and Shadey scores every walking alternative from OSRM by how
+  much of it is in shade right now, picks the shadiest, and draws it on the
+  map colour-coded by sun/shade. Cycle through alternatives with "Try
+  another route". Gated by the same network setting.
+
 ## 1.1.0
 
 **Stability**

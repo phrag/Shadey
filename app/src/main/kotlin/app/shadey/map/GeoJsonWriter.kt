@@ -40,14 +40,34 @@ object GeoJsonWriter {
         }
     }
 
-    fun point(p: LatLng, color: String): String = collection {
-        addJsonObject {
-            put("type", "Feature")
-            putJsonObject("geometry") {
-                put("type", "Point")
-                putJsonArray("coordinates") { add(p.lng); add(p.lat) }
+    fun point(p: LatLng, color: String): String = points(listOf(p to color))
+
+    /** Multiple point markers in one source — e.g. a route's start and end pins. */
+    fun points(items: List<Pair<LatLng, String>>): String = collection {
+        items.forEach { (p, color) ->
+            addJsonObject {
+                put("type", "Feature")
+                putJsonObject("geometry") {
+                    put("type", "Point")
+                    putJsonArray("coordinates") { add(p.lng); add(p.lat) }
+                }
+                putJsonObject("properties") { put("color", color) }
             }
-            putJsonObject("properties") { put("color", color) }
+        }
+    }
+
+    /** A route rendered as one LineString feature per same-sunlight run, coloured accordingly. */
+    fun route(segments: List<Pair<List<LatLng>, Sunlight>>): String = collection {
+        segments.forEach { (coords, sunlight) ->
+            if (coords.size < 2) return@forEach
+            addJsonObject {
+                put("type", "Feature")
+                putJsonObject("geometry") {
+                    put("type", "LineString")
+                    putJsonArray("coordinates") { coords.forEach { pt -> addJsonArray { add(pt.lng); add(pt.lat) } } }
+                }
+                putJsonObject("properties") { put("color", colorFor(sunlight)) }
+            }
         }
     }
 

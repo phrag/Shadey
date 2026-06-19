@@ -1043,7 +1043,9 @@ private fun formatInstant(instant: Instant, zone: ZoneId): String {
 
 private fun sunnyWindowLabel(window: ShadowEngine.SunWindow, zone: ZoneId): String {
     val start = formatInstant(window.start, zone)
-    return if (window.end != null) "Sunny $start–${formatInstant(window.end, zone)} today"
+    // Capture end in a local — it's a :core property, so Kotlin won't smart-cast it across modules.
+    val end = window.end
+    return if (end != null) "Sunny $start–${formatInstant(end, zone)} today"
     else "Sunny from $start today"
 }
 

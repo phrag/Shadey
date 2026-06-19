@@ -54,6 +54,8 @@ data class ShadeyUiState(
     val pinGeoJson: String = GeoJsonWriter.emptyCollection(),
     val sourceLabel: String = "Loading…",
     val busy: Boolean = false,
+    /** Short phase text shown while [busy] — e.g. "Computing shade…". Empty otherwise. */
+    val busyLabel: String = "",
     val cameraTarget: LatLng? = null,
     // City download UI.
     val citySearch: List<CityHit> = emptyList(),
@@ -462,6 +464,11 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         recomputeJob?.cancel()
         recomputeJob = viewModelScope.launch {
             if (!immediate) delay(80) // debounce slider scrubbing and back-to-back camera events
+            // Surface a phase indicator in the status pill — the heavy castShadow loop below can
+            // take several seconds on first hit, and a silent UI looks frozen. Cancellation
+            // doesn't reach the clear-busy update at the end; that's fine because the next
+            // recompute (which caused the cancellation) re-sets busy=true on its first line.
+            _state.update { it.copy(busy = true, busyLabel = "Computing shade…") }
             val now = instant(_state.value)
             val spots = (curated + userSpots).distinctBy { it.id }
             // Snapshot mutable fields before the background thread — the sort comparator below
@@ -498,6 +505,8 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
             val (rings, ranked) = result
             _state.update {
                 it.copy(
+                    busy = false,
+                    busyLabel = "",
                     shadowsGeoJson = GeoJsonWriter.shadows(rings),
                     ranked = ranked ?: it.ranked,
                     spotsGeoJson = if (ranked != null) GeoJsonWriter.spots(ranked) else it.spotsGeoJson,

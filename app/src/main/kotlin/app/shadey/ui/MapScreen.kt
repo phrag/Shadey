@@ -249,7 +249,8 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
                     Column {
                         Text("Shadey", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                         Text(
-                            state.sourceLabel,
+                            if (state.busy && state.busyLabel.isNotEmpty()) state.busyLabel
+                            else state.sourceLabel,
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                         )

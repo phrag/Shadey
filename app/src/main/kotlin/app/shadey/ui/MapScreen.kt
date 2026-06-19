@@ -75,6 +75,7 @@ import app.shadey.core.model.SpotSource
 import app.shadey.core.rank.SpotSunInfo
 import app.shadey.data.CityHit
 import app.shadey.data.Geocoder
+import app.shadey.data.UpdateInfo
 import kotlinx.coroutines.delay
 import java.time.Instant
 import java.time.ZoneId
@@ -85,6 +86,7 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
     val state by vm.state.collectAsStateWithLifecycle()
     val zone = remember { vm.zone() }
     val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
     var showSettings by remember { mutableStateOf(false) }
     var showCities by remember { mutableStateOf(false) }
     var showSpots by remember { mutableStateOf(false) }
@@ -330,6 +332,14 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
                     .padding(top = 14.dp, bottom = 8.dp)
                     .navigationBarsPadding()
             ) {
+                // New-version banner (opt-in update checks only)
+                state.updateAvailable?.let { info ->
+                    UpdateBanner(
+                        info,
+                        onOpen = { uriHandler.openUri(info.htmlUrl) },
+                        onDismiss = vm::dismissUpdate,
+                    )
+                }
                 // Dropped pin / selected spot card (shown when relevant)
                 state.dropped?.let { pin ->
                     DroppedCard(pin, zone, onSave = vm::saveDropped, onDismiss = vm::clearDropped)
@@ -409,10 +419,20 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
     if (showSettings) SettingsDialog(
         allowRoaming = state.allowRoaming,
         onSetRoaming = vm::setAllowRoaming,
+        updateChecksEnabled = state.updateChecksEnabled,
+        lastUpdateCheck = state.lastUpdateCheck,
+        checkingForUpdate = state.checkingForUpdate,
+        onSetUpdateChecks = vm::setUpdateChecks,
+        onCheckNow = vm::checkForUpdatesNow,
         onDismiss = { showSettings = false },
     )
     if (showCities) CitiesDialog(state, vm, onDismiss = { showCities = false })
     if (showSpots) SpotsDialog(state, vm, zone, onDismiss = { showSpots = false })
+    if (state.promptUpdateOptIn) UpdateOptInDialog(
+        onEnable = { vm.setUpdateChecks(true) },
+        onDecline = { vm.setUpdateChecks(false) },
+        onDismiss = vm::dismissUpdateOptIn,
+    )
 }
 
 @Composable
@@ -684,6 +704,11 @@ private fun SelectedCard(info: SpotSunInfo, zone: ZoneId, onRemove: () -> Unit, 
 private fun SettingsDialog(
     allowRoaming: Boolean,
     onSetRoaming: (Boolean) -> Unit,
+    updateChecksEnabled: Boolean,
+    lastUpdateCheck: Long,
+    checkingForUpdate: Boolean,
+    onSetUpdateChecks: (Boolean) -> Unit,
+    onCheckNow: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val uriHandler = LocalUriHandler.current
@@ -729,6 +754,33 @@ private fun SettingsDialog(
                     Switch(checked = allowRoaming, onCheckedChange = onSetRoaming)
                 }
                 Spacer(Modifier.height(16.dp))
+                Text("Updates", style = MaterialTheme.typography.labelLarge)
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Check for updates", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            if (lastUpdateCheck > 0L) "Last checked ${formatRelative(lastUpdateCheck)}"
+                            else "Checks GitHub for new Shadey releases.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Switch(checked = updateChecksEnabled, onCheckedChange = onSetUpdateChecks)
+                }
+                if (updateChecksEnabled) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(onClick = onCheckNow, enabled = !checkingForUpdate && allowRoaming) {
+                            Text("Check now")
+                        }
+                        if (checkingForUpdate) {
+                            Spacer(Modifier.width(8.dp))
+                            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                        }
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
                 Text("About", style = MaterialTheme.typography.labelLarge)
                 Spacer(Modifier.height(4.dp))
                 Text("Made by phrag", style = MaterialTheme.typography.bodyMedium)
@@ -749,6 +801,66 @@ private fun SettingsDialog(
                 }
             }
         },
+    )
+}
+
+@Composable
+private fun UpdateBanner(info: UpdateInfo, onOpen: () -> Unit, onDismiss: () -> Unit) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 10.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onOpen),
+        color = MaterialTheme.colorScheme.primaryContainer,
+        tonalElevation = 2.dp,
+    ) {
+        Row(
+            Modifier.padding(start = 12.dp, top = 6.dp, bottom = 6.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Filled.Refresh, null, Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+            )
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Update available — ${info.tag}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+                Text(
+                    "Tap to view the release",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.75f),
+                )
+            }
+            IconButton(onClick = onDismiss) {
+                Icon(
+                    Icons.Filled.Close, "Dismiss",
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun UpdateOptInDialog(onEnable: () -> Unit, onDecline: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Check for updates?") },
+        text = {
+            Text(
+                "Shadey can check GitHub for new versions and let you know when one is available. " +
+                    "It only contacts GitHub for this, and you can change it any time in Settings.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        },
+        confirmButton = { TextButton(onClick = onEnable) { Text("Check for updates") } },
+        dismissButton = { TextButton(onClick = onDecline) { Text("No thanks") } },
     )
 }
 
@@ -777,6 +889,16 @@ private fun sunlightColor(s: Sunlight): Color = when (s) {
 }
 
 private fun formatTime(minutes: Int): String = "%02d:%02d".format(minutes / 60, minutes % 60)
+
+private fun formatRelative(epochMs: Long): String {
+    val mins = (System.currentTimeMillis() - epochMs) / 60_000
+    return when {
+        mins < 1L -> "just now"
+        mins < 60L -> "$mins min ago"
+        mins < 1440L -> "${mins / 60} h ago"
+        else -> "${mins / 1440} d ago"
+    }
+}
 
 private fun formatInstant(instant: Instant, zone: ZoneId): String {
     val t = instant.atZone(zone).toLocalTime()

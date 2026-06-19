@@ -22,6 +22,8 @@ import app.shadey.data.CityStore
 import app.shadey.data.Geocoder
 import app.shadey.data.GeoJsonFile
 import app.shadey.data.SavedSpotsStore
+import app.shadey.data.UpdateChecker
+import app.shadey.data.UpdateInfo
 import app.shadey.data.centroid
 import app.shadey.map.ClosedBounds
 import app.shadey.map.GeoJsonWriter
@@ -31,6 +33,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -69,6 +72,14 @@ data class ShadeyUiState(
     val allowRoaming: Boolean = true,
     /** True when there's no usable building data yet, so the UI should prompt for a city. */
     val promptCity: Boolean = false,
+    // Update checking (opt-in).
+    /** A newer GitHub release, when one is available and not yet dismissed. */
+    val updateAvailable: UpdateInfo? = null,
+    /** True on first run (before the user has chosen) so the UI shows the opt-in prompt. */
+    val promptUpdateOptIn: Boolean = false,
+    val updateChecksEnabled: Boolean = false,
+    val lastUpdateCheck: Long = 0L,
+    val checkingForUpdate: Boolean = false,
 ) {
     val selected: SpotSunInfo? get() = ranked.firstOrNull { it.spot.id == selectedId }
 }
@@ -162,6 +173,18 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch {
             store.allowRoaming.collect { allow -> _state.update { it.copy(allowRoaming = allow) } }
+        }
+        viewModelScope.launch {
+            store.lastUpdateCheck.collect { ts -> _state.update { it.copy(lastUpdateCheck = ts) } }
+        }
+        viewModelScope.launch {
+            // null = never asked → prompt; true → background-check (throttled); false → do nothing.
+            store.updateChecksEnabled.collect { enabled ->
+                _state.update {
+                    it.copy(updateChecksEnabled = enabled == true, promptUpdateOptIn = enabled == null)
+                }
+                if (enabled == true) maybeCheckForUpdate()
+            }
         }
     }
 
@@ -339,6 +362,59 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     fun setAllowRoaming(value: Boolean) {
         viewModelScope.launch { store.setAllowRoaming(value) }
     }
+
+    // --- Update checking (opt-in) -----------------------------------------------------------
+
+    /** Persist the user's opt-in choice. The init collector reacts and runs a check if enabled. */
+    fun setUpdateChecks(enabled: Boolean) {
+        viewModelScope.launch { store.setUpdateChecksEnabled(enabled) }
+    }
+
+    /** Dismiss the first-run prompt without persisting a choice — it reappears next launch. */
+    fun dismissUpdateOptIn() = _state.update { it.copy(promptUpdateOptIn = false) }
+
+    /** Hide the update banner and remember the tag so the same release isn't shown again. */
+    fun dismissUpdate() {
+        val tag = _state.value.updateAvailable?.tag
+        _state.update { it.copy(updateAvailable = null) }
+        if (tag != null) viewModelScope.launch { store.setLastSeenTag(tag) }
+    }
+
+    /** Force a check from Settings — surfaces the result even if previously dismissed. */
+    fun checkForUpdatesNow() {
+        if (!_state.value.allowRoaming) return
+        runUpdateCheck(userInitiated = true)
+    }
+
+    /** Run a check only if enough time has passed since the last one (and the network is allowed). */
+    private suspend fun maybeCheckForUpdate() {
+        if (!_state.value.allowRoaming) return
+        val last = store.lastUpdateCheck.first()
+        if (System.currentTimeMillis() - last < UPDATE_CHECK_INTERVAL_MS) return
+        runUpdateCheck()
+    }
+
+    private fun runUpdateCheck(userInitiated: Boolean = false) {
+        viewModelScope.launch {
+            _state.update { it.copy(checkingForUpdate = true) }
+            val info = UpdateChecker.checkLatest(currentVersion())
+            store.setLastUpdateCheck(System.currentTimeMillis())
+            // A user-initiated check shows the result regardless; a background one suppresses a
+            // release the user already dismissed.
+            val seen = if (userInitiated) "" else store.lastSeenTag.first()
+            _state.update {
+                it.copy(
+                    checkingForUpdate = false,
+                    updateAvailable = info?.takeIf { u -> u.tag != seen },
+                )
+            }
+        }
+    }
+
+    private fun currentVersion(): String = runCatching {
+        val app = getApplication<Application>()
+        app.packageManager.getPackageInfo(app.packageName, 0).versionName.orEmpty()
+    }.getOrNull().orEmpty()
 
     /** Re-download a city whose data is already cached (e.g. to get a newer dataset). */
     fun redownloadCity(city: app.shadey.data.CachedCity) {
@@ -622,6 +698,8 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         const val MIN_BUNDLED_BUILDINGS = 1000
         const val MAX_CACHE_ENTRIES = 6000
         const val MAX_ACCUMULATED = 8000
+        // Background update checks run at most once per day.
+        const val UPDATE_CHECK_INTERVAL_MS = 24L * 60 * 60 * 1000
         // 15-minute buckets → 96 frames per day instead of 144. Combined with the 2-second
         // settle delay in precomputeFrames(), this cuts per-run garbage and the sustained GC
         // pressure from rapid panning is eliminated entirely.

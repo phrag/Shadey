@@ -1,11 +1,5 @@
 # ☀️ Shadey
-
-<p align="center">
-  <img src="docs/screenshot.png" width="300" alt="Shadey showing ground shadows across a Berlin city block at 19:56">
-  <img src="docs/screenshot-berlin.png" width="300" alt="Shadey over Friedrichshain, Berlin with the full bundled building dataset (37,819 buildings)">
-</p>
-
-**Find the sun.** Shadey shows whether a spot — a café terrace, a park bench, a
+**Find the sun or shade.** Shadey shows whether a spot — a café terrace, a park bench, a
 canal bank — is in **sunlight or shade** right now (or at any time of day),
 computed from real **building shadows**. It's English, Berlin-first, and
 fully private.
@@ -24,6 +18,10 @@ fully private.
 - 🌍 **Travels with you.** Download any city's buildings once; after that its
   shade works fully offline.
 - 🆓 **100% FOSS.** Kotlin, Jetpack Compose, MapLibre, OpenStreetMap. GPL-3.0-licensed code.
+
+<p align="center">
+  <img src="docs/screenshot-berlin.png" width="300" alt="Shadey over Friedrichshain, Berlin with the full bundled building dataset (37,819 buildings)">
+</p>
 
 > **Status:** the on-device engine is complete and unit-tested (22 tests). The
 > Android UI is implemented and builds via CI (this dev container has no Android

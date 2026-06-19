@@ -9,6 +9,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -66,6 +67,11 @@ fun ShadeyMap(
     val lifecycleOwner = LocalLifecycleOwner.current
     val mapView = remember { MapView(context) }
     var handle by remember { mutableStateOf<MapHandle?>(null) }
+    // AndroidView's factory runs only once, so click listeners registered inside it must read
+    // these through rememberUpdatedState — otherwise they'd forever call the lambda instances
+    // from the very first composition, with whatever they captured back then.
+    val currentOnMapClick by rememberUpdatedState(onMapClick)
+    val currentOnMapLongClick by rememberUpdatedState(onMapLongClick)
 
     DisposableEffect(lifecycleOwner, mapView) {
         val observer = LifecycleEventObserver { _, event ->
@@ -111,12 +117,12 @@ fun ShadeyMap(
                             .map { it.id }
                             .toTypedArray()
                         map.addOnMapClickListener { p ->
-                            onMapClick(CoreLatLng(p.latitude, p.longitude))
+                            currentOnMapClick(CoreLatLng(p.latitude, p.longitude))
                             true
                         }
                         map.addOnMapLongClickListener { p ->
                             mapView.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
-                            onMapLongClick(CoreLatLng(p.latitude, p.longitude))
+                            currentOnMapLongClick(CoreLatLng(p.latitude, p.longitude))
                             true
                         }
                         // Debounced building query — camera-idle and render-finish can both fire

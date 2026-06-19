@@ -102,6 +102,9 @@ data class ShadeyUiState(
     val routeBusy: Boolean = false,
     val routeStatus: String? = null,
     val routeGeoJson: String = GeoJsonWriter.emptyCollection(),
+    // Current sun position at the map centre — drives the compass overlay.
+    val sunAzimuthDeg: Double = 0.0,
+    val sunElevationDeg: Double = 0.0,
 ) {
     val selected: SpotSunInfo? get() = ranked.firstOrNull { it.spot.id == selectedId }
     val selectedRoute: ScoredRoute? get() = routeOptions.getOrNull(selectedRouteIdx)
@@ -752,8 +755,8 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
             // must see a stable centre, and activeBuildings can change on the main thread.
             val frozenCenter = center
             val frozenBuildings = activeBuildings
+            val sun = SolarCalculator.position(frozenCenter, now)
             val result = withContext(Dispatchers.Default) {
-                val sun = SolarCalculator.position(frozenCenter, now)
                 // Sun bucket — shadows are visually identical within ~0.5°. Cache per bucket.
                 val sunKey = "${(sun.azimuthDeg * 2).toInt()}_${(sun.elevationDeg * 2).toInt()}"
                 if (sunKey != shadowCacheSunKey || shadowCache.size > MAX_CACHE_ENTRIES) {
@@ -787,6 +790,8 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                     shadowsGeoJson = GeoJsonWriter.shadows(rings),
                     ranked = ranked ?: it.ranked,
                     spotsGeoJson = if (ranked != null) GeoJsonWriter.spots(ranked) else it.spotsGeoJson,
+                    sunAzimuthDeg = sun.azimuthDeg,
+                    sunElevationDeg = sun.elevationDeg,
                 )
             }
             // Build the day's frames for this view in the background so scrubbing is instant.

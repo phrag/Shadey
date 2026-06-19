@@ -16,6 +16,8 @@ https://github.com/phrag/shadey/releases.
   actually overcast doesn't look misleadingly bright. Annotation only — it
   never changes the sun/shade verdict. Gated by the existing "Use network
   for search & downloads" setting.
+- A small arrow in the title pill now points at the current sun direction,
+  hidden after dark.
 
 **Routes**
 - New shady-route planner: tap the walking-person button, tap a start and a
@@ -23,6 +25,12 @@ https://github.com/phrag/shadey/releases.
   much of it is in shade right now, picks the shadiest, and draws it on the
   map colour-coded by sun/shade. Cycle through alternatives with "Try
   another route". Gated by the same network setting.
+
+**Fixes**
+- Fixed the route planner not responding to map taps after the first one —
+  the start/destination picker listened for taps using a snapshot of the
+  app state frozen at map creation, so it never noticed route mode turning
+  on.
 
 ## 1.1.0
 

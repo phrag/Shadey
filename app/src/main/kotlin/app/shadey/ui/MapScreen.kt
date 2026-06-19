@@ -6,6 +6,7 @@ import android.location.LocationManager
 import android.content.Context
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -64,6 +65,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
@@ -265,6 +268,10 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                             )
                         }
+                    }
+                    if (state.sunElevationDeg > 0.0) {
+                        Spacer(Modifier.width(8.dp))
+                        SunCompass(state.sunAzimuthDeg, Modifier.size(18.dp))
                     }
                     if (state.busy) {
                         Spacer(Modifier.width(8.dp))
@@ -958,6 +965,25 @@ private fun Dot(sunlight: Sunlight?) {
         Modifier.size(14.dp).clip(CircleShape)
             .background(sunlight?.let(::sunlightColor) ?: Color.Gray),
     )
+}
+
+@Composable
+private fun SunCompass(azimuthDeg: Double, modifier: Modifier = Modifier) {
+    val color = MaterialTheme.colorScheme.primary
+    Canvas(modifier) {
+        rotate(azimuthDeg.toFloat()) {
+            val w = size.width
+            val h = size.height
+            val path = Path().apply {
+                moveTo(w / 2f, 0f)
+                lineTo(w * 0.78f, h * 0.62f)
+                lineTo(w / 2f, h * 0.42f)
+                lineTo(w * 0.22f, h * 0.62f)
+                close()
+            }
+            drawPath(path, color)
+        }
+    }
 }
 
 private fun sunlightColor(s: Sunlight): Color = when (s) {

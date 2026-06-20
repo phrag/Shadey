@@ -9,6 +9,7 @@ import app.shadey.core.model.LatLng
 import app.shadey.core.model.Spot
 import app.shadey.core.model.SpotCategory
 import app.shadey.core.model.SpotSource
+import app.shadey.core.model.SolarPosition
 import app.shadey.core.model.Sunlight
 import app.shadey.core.rank.SpotRanker
 import app.shadey.core.rank.SpotSunInfo
@@ -16,6 +17,7 @@ import app.shadey.core.shade.ShadowEngine
 import app.shadey.core.solar.SolarCalculator
 import app.shadey.data.BoundingBox
 import app.shadey.data.BuildingDownloader
+import app.shadey.data.BuildingIndex
 import app.shadey.data.CachedCity
 import app.shadey.data.CityHit
 import app.shadey.data.CityStore
@@ -372,7 +374,14 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
             }
             val now = instant()
             val frozenBuildings = activeBuildings
-            val scored = withContext(Dispatchers.Default) { raw.map { scoreRoute(it, now, frozenBuildings) } }
+            val scored = withContext(Dispatchers.Default) {
+                // Build the spatial index once for the whole plan instead of rescanning every
+                // building on each of the hundreds of per-sample lookups, and fix the sun position
+                // once — it's effectively constant across a few-km city walk at a single instant.
+                val index = BuildingIndex(frozenBuildings)
+                val sun = SolarCalculator.position(origin, now)
+                raw.map { scoreRoute(it, sun, index) }
+            }
             // Shadiest first — that's the point of the feature.
             val best = scored.indices.maxByOrNull { scored[it].shadeRatio } ?: 0
             _state.update {
@@ -388,14 +397,14 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         GeoJsonWriter.route(scored.segments.map { it.coords to it.sunlight })
 
     /** Samples every [ROUTE_SAMPLE_STEP_M] along the route and reuses the shadow engine to score it. */
-    private fun scoreRoute(route: RouteOption, now: Instant, buildings: List<Building>): ScoredRoute {
+    private fun scoreRoute(route: RouteOption, sun: SolarPosition, index: BuildingIndex): ScoredRoute {
         val samples = sampleAlong(route.coords, ROUTE_SAMPLE_STEP_M)
         val segments = ArrayList<RouteSegment>()
         var run = ArrayList<LatLng>()
         var runState: Sunlight? = null
         var sunCount = 0
         for (p in samples) {
-            val state = engine.sunlightAt(p, now, buildingsNear(p, buildings, radiusMeters = 200.0))
+            val state = engine.sunlightAt(p, sun, index.near(p, radiusMeters = 200.0))
             if (state == Sunlight.SUN) sunCount++
             if (runState != null && state != runState) {
                 run.add(p) // shared vertex so adjacent coloured segments connect with no gap

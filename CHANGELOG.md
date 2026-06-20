@@ -29,6 +29,14 @@ https://github.com/phrag/shadey/releases.
   map colour-coded by sun/shade. Cycle through alternatives with "Try
   another route". Gated by the same network setting.
 
+**Performance**
+- Route planning is much faster in dense cities. Scoring a walk used to rescan
+  every building in the loaded set (tens of thousands) at each ~25 m sample
+  point; it now builds a spatial grid index once per plan and only checks the
+  buildings in nearby cells, with each building's centroid computed a single
+  time. This removes the per-sample allocation churn that was driving heavy
+  garbage collection and dropped frames while a route was being planned.
+
 **Fixes**
 - Fixed the route planner not responding to map taps after the first one —
   the start/destination picker listened for taps using a snapshot of the

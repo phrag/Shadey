@@ -30,12 +30,16 @@ https://github.com/phrag/shadey/releases.
   another route". Gated by the same network setting.
 
 **Performance**
-- Route planning is much faster in dense cities. Scoring a walk used to rescan
-  every building in the loaded set (tens of thousands) at each ~25 m sample
-  point; it now builds a spatial grid index once per plan and only checks the
-  buildings in nearby cells, with each building's centroid computed a single
-  time. This removes the per-sample allocation churn that was driving heavy
-  garbage collection and dropped frames while a route was being planned.
+- Building lookups now go through a shared spatial grid index instead of
+  rescanning the whole loaded set (tens of thousands of buildings) on every
+  query. Route planning, spot ranking, and gathering the in-view buildings for
+  shadows previously each walked the full list — once per ~25 m route sample,
+  once per spot, and once per recompute — recomputing every building's centroid
+  each time. The index buckets buildings once, caches their centroids, and is
+  rebuilt only when a new city loads, so those lookups now touch just the
+  buildings in nearby cells. This removes the allocation churn that was driving
+  heavy garbage collection and dropped frames, most visibly while planning a
+  route.
 
 **Fixes**
 - Fixed the route planner not responding to map taps after the first one —

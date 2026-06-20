@@ -30,7 +30,6 @@ import app.shadey.data.UpdateChecker
 import app.shadey.data.UpdateInfo
 import app.shadey.data.WeatherClient
 import app.shadey.data.WeatherSnapshot
-import app.shadey.data.centroid
 import app.shadey.map.ClosedBounds
 import app.shadey.map.GeoJsonWriter
 import kotlinx.coroutines.Dispatchers
@@ -375,10 +374,10 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
             val now = instant()
             val frozenBuildings = activeBuildings
             val scored = withContext(Dispatchers.Default) {
-                // Build the spatial index once for the whole plan instead of rescanning every
-                // building on each of the hundreds of per-sample lookups, and fix the sun position
-                // once — it's effectively constant across a few-km city walk at a single instant.
-                val index = BuildingIndex(frozenBuildings)
+                // Reuse the shared spatial index instead of rescanning every building on each of the
+                // hundreds of per-sample lookups, and fix the sun position once — it's effectively
+                // constant across a few-km city walk at a single instant.
+                val index = indexFor(frozenBuildings)
                 val sun = SolarCalculator.position(origin, now)
                 raw.map { scoreRoute(it, sun, index) }
             }
@@ -762,17 +761,32 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun buildingsNear(p: LatLng, buildings: List<Building> = activeBuildings, radiusMeters: Double = 800.0): List<Building> {
-        val box = BoundingBox.around(p, radiusMeters)
-        return buildings.filter { box.contains(it.centroid()) }
+    // One spatial index per loaded building set, reused across route scoring, spot ranking, and
+    // shadow gathering. Rebuilt only when activeBuildings is swapped (a new city / fresh download),
+    // keyed by reference identity. @Synchronized because these lookups run on background dispatchers
+    // and several coroutines may otherwise race to build the index on the first call after a swap.
+    private var spatialIndex: BuildingIndex? = null
+    private var spatialIndexFor: List<Building>? = null
+
+    @Synchronized
+    private fun indexFor(buildings: List<Building>): BuildingIndex {
+        val cached = spatialIndex
+        if (cached != null && spatialIndexFor === buildings) return cached
+        return BuildingIndex(buildings).also {
+            spatialIndex = it
+            spatialIndexFor = buildings
+        }
     }
+
+    private fun buildingsNear(p: LatLng, buildings: List<Building> = activeBuildings, radiusMeters: Double = 800.0): List<Building> =
+        indexFor(buildings).near(p, radiusMeters)
 
     private fun buildingsInView(c: LatLng = center, buildings: List<Building> = activeBuildings): List<Building> {
         val b = bounds ?: return buildingsNear(c, buildings)
         // Expand the view bbox so buildings just outside screen can still cast shadows into view.
         // At a 10° sun elevation a 30m building casts a ~170m shadow; use 500m to cover low angles.
         val box = BoundingBox(b.south, b.west, b.north, b.east).expandedMeters(500.0)
-        return buildings.filter { box.contains(it.centroid()) }
+        return indexFor(buildings).inBox(box.south, box.west, box.north, box.east)
     }
 
     /**
@@ -844,10 +858,12 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Buildings to cast shadows for in the live view: those in view, closest first, capped. */
-    private fun inViewBuildings(c: LatLng, buildings: List<Building>): List<Building> =
-        buildingsInView(c, buildings)
-            .sortedBy { distanceSq(c, it.centroid()) }
+    private fun inViewBuildings(c: LatLng, buildings: List<Building>): List<Building> {
+        val idx = indexFor(buildings)
+        return buildingsInView(c, buildings)
+            .sortedBy { distanceSq(c, idx.centroidOf(it)) }
             .take(MAX_SHADOWS)
+    }
 
     private fun bucketOf(minutes: Int): Int = (minutes / FRAME_STEP_MIN) * FRAME_STEP_MIN
 

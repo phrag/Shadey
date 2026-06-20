@@ -7,20 +7,21 @@ import kotlin.math.floor
 
 /**
  * A uniform spatial grid over a set of buildings for fast "which buildings are near point P"
- * queries.
+ * (and "which buildings fall in box B") queries.
  *
- * A plain `buildings.filter { near(p) }` is O(all buildings) per call and recomputes each
- * building's centroid every time. Scoring a route issues one such query per ~25 m sample, so for
- * a city of tens of thousands of buildings that linear scan dominates the cost (and churns the GC
- * with a throwaway list per sample). This buckets every building's centroid into a [cellMeters]
- * grid once, computing each centroid a single time, so a query only scans the buildings in the
- * cells its radius overlaps.
+ * A plain `buildings.filter { … }` is O(all buildings) per call and recomputes each building's
+ * centroid every time. Scoring a route issues one such query per ~25 m sample, and ranking spots
+ * issues one per spot, so for a city of tens of thousands of buildings those linear scans dominate
+ * the cost (and churn the GC with a throwaway list per call). This buckets every building's
+ * centroid into a [cellMeters] grid once, computing each centroid a single time, so a query only
+ * scans the buildings in the cells it overlaps. Centroids are also cached for callers that need
+ * them (e.g. distance sorting).
  */
 class BuildingIndex(
     buildings: List<Building>,
     private val cellMeters: Double = 120.0,
 ) {
-    private class Entry(val building: Building, val lat: Double, val lng: Double)
+    private class Entry(val building: Building, val centroid: LatLng)
 
     // A single reference latitude fixes the lng-to-metre scale for the whole grid. Over a city-sized
     // extent the cos(latitude) variation is tiny, so cells stay close enough to square.
@@ -28,11 +29,13 @@ class BuildingIndex(
     private val dLatPerCell = cellMeters / 111_320.0
     private val dLngPerCell = cellMeters / (111_320.0 * cos(Math.toRadians(refLat)).coerceAtLeast(1e-6))
     private val cells = HashMap<Long, ArrayList<Entry>>()
+    private val centroids = HashMap<String, LatLng>()
 
     init {
         for (b in buildings) {
             val c = b.centroid()
-            cells.getOrPut(cellKey(c.lat, c.lng)) { ArrayList() }.add(Entry(b, c.lat, c.lng))
+            cells.getOrPut(cellKey(c.lat, c.lng)) { ArrayList() }.add(Entry(b, c))
+            centroids[b.id] = c
         }
     }
 
@@ -43,15 +46,19 @@ class BuildingIndex(
         return (latCell.toLong() shl 32) or (lngCell.toLong() and 0xffffffffL)
     }
 
+    /** The cached centroid of [b], or a freshly computed one if it wasn't part of this index. */
+    fun centroidOf(b: Building): LatLng = centroids[b.id] ?: b.centroid()
+
     /** Buildings whose centroid lies within the [radiusMeters] box around [p]. */
     fun near(p: LatLng, radiusMeters: Double): List<Building> {
-        if (cells.isEmpty()) return emptyList()
         val dLat = radiusMeters / 111_320.0
         val dLng = radiusMeters / (111_320.0 * cos(Math.toRadians(p.lat)).coerceAtLeast(1e-6))
-        val south = p.lat - dLat
-        val north = p.lat + dLat
-        val west = p.lng - dLng
-        val east = p.lng + dLng
+        return inBox(p.lat - dLat, p.lng - dLng, p.lat + dLat, p.lng + dLng)
+    }
+
+    /** Buildings whose centroid lies in the lat/lng box [south, west]–[north, east]. */
+    fun inBox(south: Double, west: Double, north: Double, east: Double): List<Building> {
+        if (cells.isEmpty()) return emptyList()
         val latLo = floor(south / dLatPerCell).toInt()
         val latHi = floor(north / dLatPerCell).toInt()
         val lngLo = floor(west / dLngPerCell).toInt()
@@ -64,7 +71,7 @@ class BuildingIndex(
                 val bucket = cells[(lc.toLong() shl 32) or (gc.toLong() and 0xffffffffL)]
                 if (bucket != null) {
                     for (e in bucket) {
-                        if (e.lat in south..north && e.lng in west..east) out.add(e.building)
+                        if (e.centroid.lat in south..north && e.centroid.lng in west..east) out.add(e.building)
                     }
                 }
                 gc++

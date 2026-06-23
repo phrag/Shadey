@@ -493,10 +493,25 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     fun onCameraIdle(newCenter: LatLng, newBounds: ClosedBounds) {
         center = newCenter
         bounds = newBounds
-        // Swap back to bundled data when returning from outside the bundled region.
-        if (bundledRegion?.contains(newCenter) == true && activeBuildings !== bundledBuildings) {
-            activeBuildings = bundledBuildings
-            _state.update { it.copy(sourceLabel = "Berlin · ${bundledBuildings.size} buildings") }
+        if (bundledRegion?.contains(newCenter) == true) {
+            // Swap back to bundled data when returning from outside the bundled region.
+            if (activeBuildings !== bundledBuildings) {
+                activeBuildings = bundledBuildings
+                _state.update { it.copy(sourceLabel = "Berlin · ${bundledBuildings.size} buildings") }
+            }
+        } else if (activeBuildings.isNotEmpty()) {
+            // The held buildings (bundled/downloaded-city data, or an earlier tile harvest) no
+            // longer cover where we're looking — e.g. just left that region, or panned far since
+            // the last successful tile query. Drop them instead of leaving a stale building count
+            // (and stale shadows) up while tile harvesting catches up to the new view; otherwise
+            // the title pill can claim thousands of buildings are loaded while the map shows none
+            // of them and renders no shade at all.
+            val coverage = BoundingBox.ofBuildings(activeBuildings)?.expandedMeters(STALE_DATA_MARGIN_M)
+            if (coverage?.contains(newCenter) != true) {
+                activeBuildings = emptyList()
+                accumulated.clear()
+                _state.update { it.copy(sourceLabel = "Loading buildings…") }
+            }
         }
         // Force a re-rank: the spot order now depends on distance from the map centre,
         // not just the sun's position, so a moved centre must always refresh it.
@@ -964,6 +979,9 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         const val MIN_BUNDLED_BUILDINGS = 1000
         const val MAX_CACHE_ENTRIES = 6000
         const val MAX_ACCUMULATED = 8000
+        // How far the map centre can drift from the held buildings' bounding box before that
+        // data is considered stale for the current view (see onCameraIdle).
+        const val STALE_DATA_MARGIN_M = 3_000.0
         // Background update checks run at most once per day.
         const val UPDATE_CHECK_INTERVAL_MS = 24L * 60 * 60 * 1000
         // Route shade-scoring sample spacing — fine enough to catch individual buildings'

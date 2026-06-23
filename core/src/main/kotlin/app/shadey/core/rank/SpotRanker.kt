@@ -42,7 +42,14 @@ class SpotRanker(private val engine: ShadowEngine = ShadowEngine()) {
     ): List<SpotSunInfo> {
         val projection = LocalProjection(origin)
         return spots
-            .map { spot -> evaluate(spot, instant, buildingsFor(spot)) to projection.toLocal(spot.latLng).length() }
+            .map { spot -> spot to projection.toLocal(spot.latLng).length() }
+            // Spots far enough away that they're a different city/region entirely offer no
+            // value once you've travelled there — without this, a curated spot from wherever
+            // the map last was (e.g. home city) keeps showing up as the "top spot" no matter
+            // how far you pan, since the near/far bucketing below only affects sort order,
+            // not list membership.
+            .filter { (_, distance) -> distance <= MAX_RELEVANT_METERS }
+            .map { (spot, distance) -> evaluate(spot, instant, buildingsFor(spot)) to distance }
             .sortedWith { (a, da), (b, db) ->
                 // 1. Near before far.
                 val ba = if (da <= NEAR_RADIUS_METERS) 0 else 1
@@ -76,5 +83,9 @@ class SpotRanker(private val engine: ShadowEngine = ShadowEngine()) {
     private companion object {
         /** Spots within this radius of the origin are treated as "nearby" and ranked first. */
         const val NEAR_RADIUS_METERS = 6_000.0
+
+        /** Spots farther than this from the origin aren't shown at all — comfortably larger
+         * than any single city, but well short of cross-region/cross-country distances. */
+        const val MAX_RELEVANT_METERS = 150_000.0
     }
 }

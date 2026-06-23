@@ -42,6 +42,15 @@ https://github.com/phrag/shadey/releases.
   route.
 
 **Fixes**
+- Curated and saved spots from far away (e.g. a different city, or wherever the
+  map was last open) no longer show up in the spots panel — they used to be
+  ranked last but still listed, so one could outrank everything once you'd
+  travelled far enough that nothing nearby existed yet.
+- Shade now correctly disappears (instead of showing a stale, misleadingly
+  large building count) when panning outside the bundled city or downloaded
+  city's region, or far enough since the last successful tile-based building
+  load — previously the title pill kept reporting the old building set while
+  the map showed none of them and rendered no shade at all.
 - The search, settings, cities, and route buttons in the top-right column now
   tint their icons against the surface colour explicitly. Their background
   Surfaces used a partly-transparent colour, which kept Compose from picking a

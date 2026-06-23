@@ -42,6 +42,10 @@ https://github.com/phrag/shadey/releases.
   route.
 
 **Fixes**
+- The search, settings, cities, and route buttons in the top-right column now
+  tint their icons against the surface colour explicitly. Their background
+  Surfaces used a partly-transparent colour, which kept Compose from picking a
+  contrasting icon colour automatically, leaving the icons unreadable.
 - Fixed the route planner not responding to map taps after the first one —
   the start/destination picker listened for taps using a snapshot of the
   app state frozen at map creation, so it never noticed route mode turning

@@ -294,7 +294,7 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
                     tonalElevation = 3.dp, shadowElevation = 3.dp,
                 ) {
                     IconButton(onClick = { searchActive = true }) {
-                        Icon(Icons.Filled.Search, "Search")
+                        Icon(Icons.Filled.Search, "Search", tint = MaterialTheme.colorScheme.onSurface)
                     }
                 }
             }
@@ -304,7 +304,7 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
                 tonalElevation = 3.dp, shadowElevation = 3.dp,
             ) {
                 IconButton(onClick = { showSettings = true }) {
-                    Icon(Icons.Filled.Settings, "Settings")
+                    Icon(Icons.Filled.Settings, "Settings", tint = MaterialTheme.colorScheme.onSurface)
                 }
             }
             Surface(
@@ -313,7 +313,7 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
                 tonalElevation = 3.dp, shadowElevation = 3.dp,
             ) {
                 IconButton(onClick = { showCities = true }) {
-                    Icon(Icons.Filled.Public, "Cities")
+                    Icon(Icons.Filled.Public, "Cities", tint = MaterialTheme.colorScheme.onSurface)
                 }
             }
             Surface(
@@ -326,6 +326,8 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
                     Icon(
                         if (state.routeActive) Icons.Filled.Close else Icons.Filled.DirectionsWalk,
                         "Shadiest route",
+                        tint = if (state.routeActive) MaterialTheme.colorScheme.onPrimaryContainer
+                               else MaterialTheme.colorScheme.onSurface,
                     )
                 }
             }

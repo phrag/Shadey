@@ -134,11 +134,16 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     private var curated: List<Spot> = emptyList()
     private var userSpots: List<Spot> = emptyList()
     private var activeBuildings: List<Building> = emptyList()
-    private var activeCitySlug: String? = null
     // Buildings harvested from tiles, accumulated across pans (insertion-ordered for LRU eviction).
     private val accumulated = LinkedHashMap<String, Building>()
     private var bundledBuildings: List<Building> = emptyList()
     private var bundledRegion: BoundingBox? = null
+    // The currently active downloaded city, if any — kept separate from the bundled Berlin data
+    // above so switching to a downloaded city never permanently loses the bundled dataset.
+    private var downloadedCity: CachedCity? = null
+    private var downloadedCityBuildings: List<Building> = emptyList()
+    private fun downloadedCityRegion(): BoundingBox? =
+        downloadedCity?.let { BoundingBox(it.south, it.west, it.north, it.east) }
     private var center: LatLng = initialTarget
     private var bounds: ClosedBounds? = null
     private var recomputeJob: Job? = null
@@ -493,11 +498,19 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     fun onCameraIdle(newCenter: LatLng, newBounds: ClosedBounds) {
         center = newCenter
         bounds = newBounds
+        val city = downloadedCity
         if (bundledRegion?.contains(newCenter) == true) {
             // Swap back to bundled data when returning from outside the bundled region.
             if (activeBuildings !== bundledBuildings) {
                 activeBuildings = bundledBuildings
+                forgetActiveCity()
                 _state.update { it.copy(sourceLabel = "Berlin · ${bundledBuildings.size} buildings") }
+            }
+        } else if (city != null && downloadedCityRegion()?.contains(newCenter) == true) {
+            // Swap back to the active downloaded city's data when returning to it.
+            if (activeBuildings !== downloadedCityBuildings) {
+                activeBuildings = downloadedCityBuildings
+                _state.update { it.copy(sourceLabel = "${city.name} · ${downloadedCityBuildings.size} buildings") }
             }
         } else if (activeBuildings.isNotEmpty()) {
             // The held buildings (bundled/downloaded-city data, or an earlier tile harvest) no
@@ -510,6 +523,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
             if (coverage?.contains(newCenter) != true) {
                 activeBuildings = emptyList()
                 accumulated.clear()
+                forgetActiveCity()
                 _state.update { it.copy(sourceLabel = "Loading buildings…") }
             }
         }
@@ -548,8 +562,9 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
      * Parsed off the main thread and fed straight into the shadow engine.
      */
     fun onBuildingsQueried(features: List<org.maplibre.geojson.Feature>, belowZoom: Boolean) {
-        // Bundled data is more complete than tile queries — skip when inside the bundled region.
+        // Bundled/downloaded-city data is more complete than tile queries — skip both regions.
         if (bundledRegion?.contains(center) == true) return
+        if (downloadedCityRegion()?.contains(center) == true) return
         buildingsJob?.cancel()
         buildingsJob = viewModelScope.launch {
             if (belowZoom) {
@@ -732,10 +747,9 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Make a downloaded city the active region: its data drives shadows and the map jumps to it. */
     private fun activateCity(city: CachedCity, buildings: List<Building>) {
-        bundledBuildings = buildings
-        bundledRegion = BoundingBox(city.south, city.west, city.north, city.east)
+        downloadedCity = city
+        downloadedCityBuildings = buildings
         activeBuildings = buildings
-        activeCitySlug = city.slug
         accumulated.clear()
         shadowCache.clear()
         shadowCacheSunKey = null
@@ -748,6 +762,17 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
             )
         }
         recompute(rank = true, immediate = true)
+    }
+
+    /** Stop treating a downloaded city as "what to restore on next launch" once the map has
+     *  panned away from it — otherwise a cold start (including one forced by the OS killing the
+     *  backgrounded app) silently jumps the camera back to a city the user isn't even looking at
+     *  anymore, instead of resuming wherever they actually left off. */
+    private fun forgetActiveCity() {
+        if (downloadedCity == null) return
+        downloadedCity = null
+        downloadedCityBuildings = emptyList()
+        viewModelScope.launch(Dispatchers.IO) { cityStore.clearLastUsed() }
     }
 
     private fun evaluatePoint(p: LatLng): SpotSunInfo {

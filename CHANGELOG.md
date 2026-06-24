@@ -42,6 +42,15 @@ https://github.com/phrag/shadey/releases.
   route.
 
 **Fixes**
+- Fixed the map jumping to a previously-downloaded city out of nowhere while browsing
+  somewhere else entirely (e.g. mid-pan around Berlin suddenly landing in Palermo) —
+  switching to a downloaded city is now forgotten once you've panned away from it, so a
+  fresh launch (including one forced by Android killing the backgrounded app to reclaim
+  memory) resumes wherever you actually left off instead of teleporting back to that city.
+  Switching to a downloaded city also no longer permanently discards the bundled Berlin
+  data from memory — panning back to Berlin after visiting a downloaded city now
+  correctly restores the full bundled dataset instead of falling back to a sparser
+  tile-harvested approximation for the rest of the session.
 - Curated and saved spots from far away (e.g. a different city, or wherever the
   map was last open) no longer show up in the spots panel — they used to be
   ranked last but still listed, so one could outrank everything once you'd

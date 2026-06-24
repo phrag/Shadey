@@ -121,17 +121,38 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
         }
     }
 
-    fun getAndMoveToLocation() {
+    fun resolveLocation(): app.shadey.core.model.LatLng? {
         val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
         @Suppress("MissingPermission")
         val loc = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
             ?: lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-        if (loc != null) vm.moveTo(app.shadey.core.model.LatLng(loc.latitude, loc.longitude))
+        return loc?.let { app.shadey.core.model.LatLng(it.latitude, it.longitude) }
+    }
+
+    // What to do with a location fix once permission resolves — lets one permission launcher serve
+    // both the "centre on me" button and the route planner's "use my location" start.
+    var pendingLocationAction by remember {
+        mutableStateOf<((app.shadey.core.model.LatLng?) -> Unit)?>(null)
     }
 
     val locationPermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { granted -> if (granted) getAndMoveToLocation() }
+    ) { granted ->
+        val action = pendingLocationAction ?: { p -> p?.let { vm.moveTo(it) } }
+        pendingLocationAction = null
+        action(if (granted) resolveLocation() else null)
+    }
+
+    fun runWithLocation(action: (app.shadey.core.model.LatLng?) -> Unit) {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)
+            == PackageManager.PERMISSION_GRANTED
+        ) {
+            action(resolveLocation())
+        } else {
+            pendingLocationAction = action
+            locationPermLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+    }
 
     Box(Modifier.fillMaxSize()) {
         ShadeyMapLayer(state, vm)
@@ -332,15 +353,7 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
                 }
             }
             FloatingActionButton(
-                onClick = {
-                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)
-                        == PackageManager.PERMISSION_GRANTED
-                    ) {
-                        getAndMoveToLocation()
-                    } else {
-                        locationPermLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
-                    }
-                },
+                onClick = { runWithLocation { p -> p?.let { vm.moveTo(it) } } },
                 containerColor = MaterialTheme.colorScheme.surface,
                 contentColor = MaterialTheme.colorScheme.primary,
             ) {
@@ -374,7 +387,12 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
                 }
                 // Shady route planner (shown while active — picking points or showing a result)
                 if (state.routeActive) {
-                    RouteCard(state, onNext = vm::nextRouteOption, onCancel = vm::cancelRoutePlanning)
+                    RouteCard(
+                        state,
+                        onNext = vm::nextRouteOption,
+                        onCancel = vm::cancelRoutePlanning,
+                        onUseMyLocation = { runWithLocation { vm.useLocationAsRouteStart(it) } },
+                    )
                 }
                 // Dropped pin / selected spot card (shown when relevant)
                 state.dropped?.let { pin ->
@@ -761,7 +779,12 @@ private fun SelectedCard(
 }
 
 @Composable
-private fun RouteCard(state: ShadeyUiState, onNext: () -> Unit, onCancel: () -> Unit) {
+private fun RouteCard(
+    state: ShadeyUiState,
+    onNext: () -> Unit,
+    onCancel: () -> Unit,
+    onUseMyLocation: () -> Unit,
+) {
     Card(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
         Column(Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -799,8 +822,14 @@ private fun RouteCard(state: ShadeyUiState, onNext: () -> Unit, onCancel: () -> 
                         }
                     }
                 }
-                state.routeOrigin == null ->
+                state.routeOrigin == null -> Column {
                     Text("Tap the map to set your start point", style = MaterialTheme.typography.bodyMedium)
+                    TextButton(onClick = onUseMyLocation, modifier = Modifier.padding(top = 4.dp)) {
+                        Icon(Icons.Filled.MyLocation, null, Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Use my location")
+                    }
+                }
                 else ->
                     Text("Now tap your destination", style = MaterialTheme.typography.bodyMedium)
             }

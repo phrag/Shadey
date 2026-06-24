@@ -329,7 +329,10 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         if (!s.routeActive) return
         when {
             s.routeOrigin == null -> _state.update {
-                it.copy(routeOrigin = p, pinGeoJson = GeoJsonWriter.points(listOf(p to ROUTE_ORIGIN_COLOR)))
+                it.copy(
+                    routeOrigin = p, routeStatus = null,
+                    pinGeoJson = GeoJsonWriter.points(listOf(p to ROUTE_ORIGIN_COLOR)),
+                )
             }
             s.routeDest == null -> {
                 val origin = s.routeOrigin!! // guaranteed by the branch above having been skipped
@@ -351,6 +354,28 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                     pinGeoJson = GeoJsonWriter.points(listOf(p to ROUTE_ORIGIN_COLOR)),
                 )
             }
+        }
+    }
+
+    /**
+     * Use the device's current location as the route's start point, skipping the map tap. A null
+     * [p] means the fix was unavailable (permission denied, or no recent location) — surface that
+     * rather than silently doing nothing, so the user knows to tap the map instead. Setting the
+     * origin always clears any half-finished pick so the flow restarts cleanly from "now tap your
+     * destination".
+     */
+    fun useLocationAsRouteStart(p: LatLng?) {
+        if (!_state.value.routeActive) return
+        if (p == null) {
+            _state.update { it.copy(routeStatus = "Couldn't get your location — tap the map to set a start point") }
+            return
+        }
+        _state.update {
+            it.copy(
+                routeOrigin = p, routeDest = null, routeOptions = emptyList(), selectedRouteIdx = 0,
+                routeBusy = false, routeStatus = null, routeGeoJson = GeoJsonWriter.emptyCollection(),
+                pinGeoJson = GeoJsonWriter.points(listOf(p to ROUTE_ORIGIN_COLOR)),
+            )
         }
     }
 

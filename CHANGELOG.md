@@ -28,6 +28,10 @@ https://github.com/phrag/shadey/releases.
   much of it is in shade right now, picks the shadiest, and draws it on the
   map colour-coded by sun/shade. Cycle through alternatives with "Try
   another route". Gated by the same network setting.
+- The route planner can now use your current location as the start point —
+  tap "Use my location" instead of tapping a start on the map, then just tap
+  your destination. Falls back to a clear message (tap the map instead) if
+  the location permission is denied or no fix is available yet.
 
 **Performance**
 - Building lookups now go through a shared spatial grid index instead of

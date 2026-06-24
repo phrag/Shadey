@@ -43,11 +43,14 @@ https://github.com/phrag/shadey/releases.
 
 **Fixes**
 - Fixed the map jumping to a previously-downloaded city out of nowhere while browsing
-  somewhere else entirely (e.g. mid-pan around Berlin suddenly landing in Palermo) —
-  switching to a downloaded city is now forgotten once you've panned away from it, so a
-  fresh launch (including one forced by Android killing the backgrounded app to reclaim
-  memory) resumes wherever you actually left off instead of teleporting back to that city.
-  Switching to a downloaded city also no longer permanently discards the bundled Berlin
+  somewhere else entirely (e.g. mid-pan around Berlin suddenly landing in Palermo). The
+  app silently restores your last-used downloaded city on launch — and Android can quietly
+  recreate the app (and re-run that restore) when it reclaims a backgrounded app's memory,
+  so returning to what looked like the same session would teleport the camera to that city.
+  The launch-time restore now only re-loads the city's building data and leaves the camera
+  where it is; only an explicit city switch (search-and-download, or picking a saved city)
+  moves the view.
+- Switching to a downloaded city also no longer permanently discards the bundled Berlin
   data from memory — panning back to Berlin after visiting a downloaded city now
   correctly restores the full bundled dataset instead of falling back to a sparser
   tile-harvested approximation for the rest of the session.

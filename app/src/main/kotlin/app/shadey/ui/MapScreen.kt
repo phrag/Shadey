@@ -159,6 +159,7 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
         enabled = state.userTracking,
         onLocation = vm::onUserLocation,
         onHeading = vm::onUserHeading,
+        onCalibrationNeeded = vm::onCompassCalibration,
     )
 
     Box(Modifier.fillMaxSize()) {
@@ -386,6 +387,11 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
                     .padding(top = 14.dp, bottom = 8.dp)
                     .navigationBarsPadding()
             ) {
+                // Compass calibration hint — a disturbed/uncalibrated magnetometer is the usual
+                // cause of a grossly-wrong facing direction. Only while live-tracking.
+                if (state.userTracking && state.compassNeedsCalibration) {
+                    CompassCalibrationBanner()
+                }
                 // New-version banner (opt-in update checks only)
                 state.updateAvailable?.let { info ->
                     UpdateBanner(
@@ -950,6 +956,42 @@ private fun SettingsDialog(
             }
         },
     )
+}
+
+@Composable
+private fun CompassCalibrationBanner() {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 10.dp)
+            .clip(RoundedCornerShape(12.dp)),
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+        tonalElevation = 2.dp,
+    ) {
+        Row(
+            Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Filled.Refresh, null, Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.onTertiaryContainer,
+            )
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Compass needs calibrating",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                )
+                Text(
+                    "Wave the phone in a figure-8 a few times to fix the facing direction.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.75f),
+                )
+            }
+        }
+    }
 }
 
 @Composable

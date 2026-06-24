@@ -13,6 +13,7 @@ import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Build
 import android.os.Looper
+import android.os.SystemClock
 import android.view.Surface
 import android.view.WindowManager
 import androidx.compose.runtime.Composable
@@ -32,17 +33,25 @@ import app.shadey.core.model.LatLng
  * [onHeading]. Listeners are registered on resume and torn down on pause/dispose so they never
  * drain the battery in the background. Sensors need no permission; location updates start only if
  * the location permission is already granted (the caller requests it before enabling tracking).
+ *
+ * Heading uses two sources, the way Organic Maps does: while you're actually moving, the GPS
+ * course-over-ground ([Location.getBearing]) drives the arrow — it's far steadier and more accurate
+ * than the magnetometer once walking — and the compass only takes over when you slow to a stop.
+ * [onCalibrationNeeded] fires when the magnetometer is uncalibrated/disturbed (the usual cause of a
+ * grossly-wrong heading), so the UI can prompt the figure-8 calibration wave.
  */
 @Composable
 fun LocationHeadingTracker(
     enabled: Boolean,
     onLocation: (LatLng) -> Unit,
     onHeading: (Float) -> Unit,
+    onCalibrationNeeded: (Boolean) -> Unit = {},
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val currentOnLocation by rememberUpdatedState(onLocation)
     val currentOnHeading by rememberUpdatedState(onHeading)
+    val currentOnCalibration by rememberUpdatedState(onCalibrationNeeded)
 
     DisposableEffect(enabled, lifecycleOwner) {
         if (!enabled) return@DisposableEffect onDispose { }
@@ -67,6 +76,32 @@ fun LocationHeadingTracker(
         // from hopping while you stand still, without noticeably lagging a real walk.
         var displayed: LatLng? = null
 
+        // --- Shared heading state, fed by both the GPS course and the compass ---
+        var headingSmoothed = Float.NaN
+        var headingEmitted = Float.NaN
+        // elapsedRealtime of the last GPS-course heading. While this is recent the compass yields
+        // to the course (the arrow follows your travel direction, which is far steadier).
+        var lastCourseAtMs = 0L
+        // Last calibration verdict pushed up, so we only notify on a change.
+        var lastCalibrationBad: Boolean? = null
+
+        fun emitHeading(deg: Float) {
+            headingSmoothed = smoothAngle(headingSmoothed, deg)
+            // Deadband: the magnetometer dithers by a degree or two even when the phone is perfectly
+            // still, which reads as the cone shimmering. Only push once it has actually turned past
+            // a small threshold.
+            if (headingEmitted.isNaN() || angleDelta(headingEmitted, headingSmoothed) >= HEADING_MIN_DELTA_DEG) {
+                headingEmitted = headingSmoothed
+                currentOnHeading(headingSmoothed)
+            }
+        }
+
+        fun reportCalibration(bad: Boolean) {
+            if (lastCalibrationBad == bad) return
+            lastCalibrationBad = bad
+            currentOnCalibration(bad)
+        }
+
         val locationListener = LocationListener { loc ->
             val accepted = lastAccepted
             if (accepted != null && !isBetterLocation(loc, accepted)) return@LocationListener
@@ -76,17 +111,30 @@ fun LocationHeadingTracker(
             displayed = p
             lastLocation = p
             currentOnLocation(p)
+            // Course-over-ground is already true-north referenced (no declination needed). Use it
+            // as the heading whenever we're moving fast enough for it to be meaningful — below that
+            // the bearing is just GPS noise and the compass is better.
+            if (loc.hasBearing() && loc.hasSpeed() && loc.speed >= COURSE_MIN_SPEED_MPS) {
+                lastCourseAtMs = SystemClock.elapsedRealtime()
+                emitHeading(loc.bearing)
+            }
         }
 
         val sensorListener = object : SensorEventListener {
             private val rotationMatrix = FloatArray(9)
             private val remapped = FloatArray(9)
             private val orientation = FloatArray(3)
-            private var smoothed = Float.NaN
-            private var emitted = Float.NaN
 
             override fun onSensorChanged(event: SensorEvent) {
                 if (event.sensor.type != Sensor.TYPE_ROTATION_VECTOR) return
+                // The rotation vector reports its estimated heading accuracy (radians) in values[4]
+                // on most devices — a direct, reliable "is the compass trustworthy" signal.
+                if (event.values.size >= 5 && event.values[4] >= 0f) {
+                    reportCalibration(event.values[4] > HEADING_ACCURACY_BAD_RAD)
+                }
+                // While GPS course is driving the arrow (we're moving), let it own the heading —
+                // the magnetometer is noisier than course-over-ground once walking.
+                if (SystemClock.elapsedRealtime() - lastCourseAtMs < COURSE_HOLD_MS) return
                 SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
                 val (axisX, axisY) = remapAxesForDisplay(displayRotation(context))
                 SensorManager.remapCoordinateSystem(rotationMatrix, axisX, axisY, remapped)
@@ -98,17 +146,17 @@ fun LocationHeadingTracker(
                     ).declination
                 }
                 deg = ((deg % 360f) + 360f) % 360f
-                smoothed = smoothAngle(smoothed, deg)
-                // Deadband: the magnetometer dithers by a degree or two even when the phone is
-                // perfectly still, which reads as the cone shimmering. Only push a new heading once
-                // it has actually turned past a small threshold.
-                if (emitted.isNaN() || angleDelta(emitted, smoothed) >= HEADING_MIN_DELTA_DEG) {
-                    emitted = smoothed
-                    currentOnHeading(smoothed)
-                }
+                emitHeading(deg)
             }
 
-            override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+            override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
+                // Fallback calibration signal for devices that don't fill in values[4].
+                when (accuracy) {
+                    SensorManager.SENSOR_STATUS_UNRELIABLE,
+                    SensorManager.SENSOR_STATUS_ACCURACY_LOW -> reportCalibration(true)
+                    SensorManager.SENSOR_STATUS_ACCURACY_HIGH -> reportCalibration(false)
+                }
+            }
         }
 
         var active = false
@@ -185,6 +233,16 @@ private const val HEADING_MIN_DELTA_DEG = 2f
 // A position jump larger than this (metres) snaps straight through instead of being smoothed —
 // covers the first real GPS fix after a coarse network one and any genuine teleport.
 private const val LOCATION_SNAP_M = 25.0
+// Above this speed (m/s ≈ 2.5 km/h, a slow walk) GPS course-over-ground drives the heading instead
+// of the compass; below it the bearing is mostly noise so the magnetometer is preferred.
+private const val COURSE_MIN_SPEED_MPS = 0.7f
+// How long a GPS-course heading keeps priority over the compass after the last qualifying fix, so a
+// brief pause between fixes (or at a crossing) doesn't immediately hand the arrow back to a noisier
+// magnetometer reading.
+private const val COURSE_HOLD_MS = 4_000L
+// Estimated heading accuracy (radians) above which the compass is treated as needing calibration.
+// ~0.6 rad ≈ 34°; beyond that the reading is too far off to trust.
+private const val HEADING_ACCURACY_BAD_RAD = 0.6f
 
 /** Exponentially smooths a compass angle, taking the shortest path across the 0°/360° wrap. */
 private fun smoothAngle(previous: Float, next: Float, alpha: Float = 0.18f): Float {

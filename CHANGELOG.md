@@ -23,13 +23,16 @@ https://github.com/phrag/shadey/releases.
   hidden after dark.
 - Tap the My-location button to drop a live "you are here" marker — an upright
   ツ smiley face with a translucent cone that swings beneath it to show which
-  way you're facing, read from the device's orientation sensors and corrected
-  to true north. The
+  way you're facing. While you're walking the facing direction comes from your
+  GPS travel direction (steadier and more accurate than the compass); when you
+  stop, it falls back to the orientation sensors, corrected to true north. The
   marker tracks your position and heading live while the app is open, and the
   map follows you as you move; panning the map yourself stops the follow (the
   marker stays), and tapping My-location again re-centres and resumes it. The
   sensors and location updates only run while the app is foregrounded, so
-  there's no background battery drain.
+  there's no background battery drain. If the compass is uncalibrated (the
+  usual cause of a wildly-wrong heading), a hint asks you to wave the phone in
+  a figure-8.
 
 **Routes**
 - New shady-route planner: tap the walking-person button, tap a start and a

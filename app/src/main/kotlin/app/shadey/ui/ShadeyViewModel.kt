@@ -119,6 +119,9 @@ data class ShadeyUiState(
     /** Heading in degrees clockwise from true north, or null until the orientation sensor reports. */
     val userHeadingDeg: Float? = null,
     val userGeoJson: String = GeoJsonWriter.emptyCollection(),
+    /** True when the magnetometer is uncalibrated/disturbed, so the UI prompts the figure-8 wave.
+     *  Only meaningful while tracking and when the heading is coming from the compass. */
+    val compassNeedsCalibration: Boolean = false,
 ) {
     val selected: SpotSunInfo? get() = ranked.firstOrNull { it.spot.id == selectedId }
     val selectedRoute: ScoredRoute? get() = routeOptions.getOrNull(selectedRouteIdx)
@@ -550,6 +553,13 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     /** A manual map gesture stops the camera following the user; the marker keeps tracking. */
     fun disengageFollow() {
         if (_state.value.userFollow) _state.update { it.copy(userFollow = false) }
+    }
+
+    /** The orientation sensor's read on whether the compass is trustworthy right now. */
+    fun onCompassCalibration(needed: Boolean) {
+        if (_state.value.compassNeedsCalibration != needed) {
+            _state.update { it.copy(compassNeedsCalibration = needed) }
+        }
     }
 
     private fun userMarkerJson(p: LatLng?, heading: Float?): String =

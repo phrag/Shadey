@@ -197,7 +197,9 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                 val b = withContext(Dispatchers.Default) {
                     runCatching { GeoJsonFile.buildings(lastFile) }.getOrDefault(emptyList())
                 }
-                if (b.isNotEmpty()) { activateCity(lastCity, b); true } else false
+                // Restore the city's building data so shade works if the user is near it, but do
+                // NOT move the camera — a silent restore must never yank the view to another city.
+                if (b.isNotEmpty()) { activateCity(lastCity, b, moveCamera = false); true } else false
             } else false
             if (!restored) {
                 recompute(rank = true, immediate = true)
@@ -745,8 +747,16 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Make a downloaded city the active region: its data drives shadows and the map jumps to it. */
-    private fun activateCity(city: CachedCity, buildings: List<Building>) {
+    /**
+     * Make a downloaded city the active region: its data drives shadows and, when [moveCamera] is
+     * set, the map jumps to it. An explicit city switch (search → download, or picking a cached
+     * city) does want the camera to follow; the silent restore on launch does NOT — otherwise an
+     * Activity/process recreation (e.g. Android reclaiming the backgrounded app's memory, then the
+     * user returning) re-runs init and teleports the camera to whatever city was last used, which
+     * reads as the map randomly jumping mid-session. So the restore keeps the data but leaves the
+     * camera wherever it already is.
+     */
+    private fun activateCity(city: CachedCity, buildings: List<Building>, moveCamera: Boolean = true) {
         downloadedCity = city
         downloadedCityBuildings = buildings
         activeBuildings = buildings
@@ -754,11 +764,11 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         shadowCache.clear()
         shadowCacheSunKey = null
         framesViewKey = null
-        center = LatLng(city.lat, city.lng)
+        if (moveCamera) center = LatLng(city.lat, city.lng)
         _state.update {
             it.copy(
                 sourceLabel = "${city.name} · ${buildings.size} buildings",
-                cameraTarget = center,
+                cameraTarget = if (moveCamera) LatLng(city.lat, city.lng) else it.cameraTarget,
             )
         }
         recompute(rank = true, immediate = true)

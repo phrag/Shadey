@@ -42,6 +42,26 @@ object GeoJsonWriter {
 
     fun point(p: LatLng, color: String): String = points(listOf(p to color))
 
+    /**
+     * The live "you are here" marker: one Point feature carrying the facing direction. [heading]
+     * is degrees clockwise from true north (null until the orientation sensor has a reading). The
+     * `cone` flag drives a layer filter so the directional cone only shows once a heading exists,
+     * leaving just the person silhouette before then.
+     */
+    fun userMarker(p: LatLng, heading: Float?): String = collection {
+        addJsonObject {
+            put("type", "Feature")
+            putJsonObject("geometry") {
+                put("type", "Point")
+                putJsonArray("coordinates") { add(p.lng); add(p.lat) }
+            }
+            putJsonObject("properties") {
+                put("heading", (heading ?: 0f).toDouble())
+                put("cone", heading != null)
+            }
+        }
+    }
+
     /** Multiple point markers in one source — e.g. a route's start and end pins. */
     fun points(items: List<Pair<LatLng, String>>): String = collection {
         items.forEach { (p, color) ->

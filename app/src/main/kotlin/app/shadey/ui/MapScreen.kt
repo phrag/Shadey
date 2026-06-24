@@ -154,6 +154,13 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
         }
     }
 
+    // Continuous location + heading listeners, live only once the user has enabled tracking.
+    LocationHeadingTracker(
+        enabled = state.userTracking,
+        onLocation = vm::onUserLocation,
+        onHeading = vm::onUserHeading,
+    )
+
     Box(Modifier.fillMaxSize()) {
         ShadeyMapLayer(state, vm)
 
@@ -353,9 +360,11 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
                 }
             }
             FloatingActionButton(
-                onClick = { runWithLocation { p -> p?.let { vm.moveTo(it) } } },
-                containerColor = MaterialTheme.colorScheme.surface,
-                contentColor = MaterialTheme.colorScheme.primary,
+                onClick = { runWithLocation { p -> vm.startLocationFollow(p) } },
+                containerColor = if (state.userFollow) MaterialTheme.colorScheme.primaryContainer
+                                 else MaterialTheme.colorScheme.surface,
+                contentColor = if (state.userFollow) MaterialTheme.colorScheme.onPrimaryContainer
+                               else MaterialTheme.colorScheme.primary,
             ) {
                 Icon(Icons.Filled.MyLocation, "My location")
             }
@@ -658,6 +667,7 @@ private fun ShadeyMapLayer(state: ShadeyUiState, vm: ShadeyViewModel) {
         spotsGeoJson = state.spotsGeoJson,
         pinGeoJson = state.pinGeoJson,
         routeGeoJson = state.routeGeoJson,
+        userGeoJson = state.userGeoJson,
         cameraTarget = state.cameraTarget,
         // While route-planning is active, taps set the origin/destination and long-press is
         // suspended (so you can't accidentally drop a spot pin while picking route points).
@@ -666,6 +676,7 @@ private fun ShadeyMapLayer(state: ShadeyUiState, vm: ShadeyViewModel) {
         onCameraIdle = vm::onCameraIdle,
         onBuildingsQueried = vm::onBuildingsQueried,
         onCameraTargetConsumed = vm::onCameraTargetConsumed,
+        onUserGesture = vm::disengageFollow,
         modifier = Modifier.fillMaxSize(),
     )
 }

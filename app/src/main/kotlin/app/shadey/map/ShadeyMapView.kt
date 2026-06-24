@@ -1,8 +1,12 @@
 package app.shadey.map
 
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.RectF
 import android.os.Handler
 import android.os.Looper
+import androidx.annotation.DrawableRes
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -16,11 +20,14 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import app.shadey.R
 import app.shadey.core.model.LatLng as CoreLatLng
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng as MlLatLng
+import org.maplibre.android.gestures.MoveGestureDetector
 import org.maplibre.geojson.Feature
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
@@ -29,7 +36,9 @@ import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.FillLayer
 import org.maplibre.android.style.layers.LineLayer
+import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory
+import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.sources.GeoJsonSource
 
 /** The visible map area reported back to the ViewModel after camera movement. */
@@ -55,12 +64,14 @@ fun ShadeyMap(
     spotsGeoJson: String,
     pinGeoJson: String,
     routeGeoJson: String,
+    userGeoJson: String,
     cameraTarget: CoreLatLng?,
     onMapClick: (CoreLatLng) -> Unit,
     onMapLongClick: (CoreLatLng) -> Unit,
     onCameraIdle: (center: CoreLatLng, bounds: ClosedBounds) -> Unit,
     onBuildingsQueried: (features: List<Feature>, belowZoom: Boolean) -> Unit,
     onCameraTargetConsumed: () -> Unit,
+    onUserGesture: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -72,6 +83,7 @@ fun ShadeyMap(
     // from the very first composition, with whatever they captured back then.
     val currentOnMapClick by rememberUpdatedState(onMapClick)
     val currentOnMapLongClick by rememberUpdatedState(onMapLongClick)
+    val currentOnUserGesture by rememberUpdatedState(onUserGesture)
 
     DisposableEffect(lifecycleOwner, mapView) {
         val observer = LifecycleEventObserver { _, event ->
@@ -106,7 +118,7 @@ fun ShadeyMap(
                         ),
                     )
                     map.setStyle(Style.Builder().fromUri("https://tiles.openfreemap.org/styles/liberty")) { style ->
-                        MapStyles.installLayers(style)
+                        MapStyles.installLayers(context, style)
                         // All basemap layers whose ID contains "building" — this includes both the
                         // 2D fill layer (visible at z14+) and the 3D extrusion layer (z15+). Using
                         // both means we get building footprints at any zoom the app cares about,
@@ -125,6 +137,14 @@ fun ShadeyMap(
                             currentOnMapLongClick(CoreLatLng(p.latitude, p.longitude))
                             true
                         }
+                        // A user pan/zoom/rotate gesture disengages camera-follow so we never fight
+                        // the user for control. Programmatic animateCamera (the follow itself) does
+                        // not trigger this, only direct gestures do.
+                        map.addOnMoveListener(object : MapLibreMap.OnMoveListener {
+                            override fun onMoveBegin(detector: MoveGestureDetector) { currentOnUserGesture() }
+                            override fun onMove(detector: MoveGestureDetector) {}
+                            override fun onMoveEnd(detector: MoveGestureDetector) {}
+                        })
                         // Debounced building query — camera-idle and render-finish can both fire
                         // many times per pan (once per tile zoom level as tiles arrive). We post
                         // a delayed runnable and cancel any pending one, so only the last event
@@ -184,6 +204,9 @@ fun ShadeyMap(
     LaunchedEffect(handle, routeGeoJson) {
         handle?.style?.getSourceAs<GeoJsonSource>("route")?.setGeoJson(routeGeoJson)
     }
+    LaunchedEffect(handle, userGeoJson) {
+        handle?.style?.getSourceAs<GeoJsonSource>("user")?.setGeoJson(userGeoJson)
+    }
     LaunchedEffect(handle, cameraTarget) {
         val h = handle ?: return@LaunchedEffect
         val target = cameraTarget ?: return@LaunchedEffect
@@ -193,11 +216,19 @@ fun ShadeyMap(
 }
 
 private object MapStyles {
-    fun installLayers(style: Style) {
+    // Icon ids registered with the style for the live location marker.
+    private const val CONE_IMAGE = "user-cone"
+    private const val PERSON_IMAGE = "user-person"
+
+    fun installLayers(context: Context, style: Style) {
         style.addSource(GeoJsonSource("shadows", GeoJsonWriter.emptyCollection()))
         style.addSource(GeoJsonSource("spots", GeoJsonWriter.emptyCollection()))
         style.addSource(GeoJsonSource("pin", GeoJsonWriter.emptyCollection()))
         style.addSource(GeoJsonSource("route", GeoJsonWriter.emptyCollection()))
+        style.addSource(GeoJsonSource("user", GeoJsonWriter.emptyCollection()))
+
+        style.addImage(CONE_IMAGE, drawableToBitmap(context, R.drawable.ic_user_heading_cone, 168))
+        style.addImage(PERSON_IMAGE, drawableToBitmap(context, R.drawable.ic_user_person, 90))
 
         // Ground shadows — inserted below road labels so they show on top of ground/parks
         // but don't cover street text. "road_label" is a stable layer in the Liberty style.
@@ -239,5 +270,38 @@ private object MapStyles {
                 PropertyFactory.circleStrokeWidth(3f),
             ),
         )
+        // Live "you are here" marker (drawn above everything else). The cone fans out in the
+        // facing direction and only appears once a heading reading exists ("cone" == true); the
+        // person silhouette sits on top of it. Both rotate by the per-feature "heading" property,
+        // aligned to the map so they point at the true-world bearing regardless of map rotation.
+        val coneLayer = SymbolLayer("user-cone-layer", "user").withProperties(
+            PropertyFactory.iconImage(CONE_IMAGE),
+            PropertyFactory.iconRotate(Expression.get("heading")),
+            PropertyFactory.iconRotationAlignment(Property.ICON_ROTATION_ALIGNMENT_MAP),
+            PropertyFactory.iconAnchor(Property.ICON_ANCHOR_BOTTOM),
+            PropertyFactory.iconAllowOverlap(true),
+            PropertyFactory.iconIgnorePlacement(true),
+        )
+        coneLayer.setFilter(Expression.eq(Expression.get("cone"), Expression.literal(true)))
+        style.addLayer(coneLayer)
+        style.addLayer(
+            SymbolLayer("user-person-layer", "user").withProperties(
+                PropertyFactory.iconImage(PERSON_IMAGE),
+                PropertyFactory.iconRotate(Expression.get("heading")),
+                PropertyFactory.iconRotationAlignment(Property.ICON_ROTATION_ALIGNMENT_MAP),
+                PropertyFactory.iconAllowOverlap(true),
+                PropertyFactory.iconIgnorePlacement(true),
+            ),
+        )
+    }
+
+    /** Rasterise a (possibly vector) drawable to a square [sizePx] bitmap for `style.addImage`. */
+    private fun drawableToBitmap(context: Context, @DrawableRes id: Int, sizePx: Int): Bitmap {
+        val drawable = requireNotNull(ContextCompat.getDrawable(context, id)) { "missing drawable $id" }
+        val bitmap = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        drawable.setBounds(0, 0, sizePx, sizePx)
+        drawable.draw(canvas)
+        return bitmap
     }
 }

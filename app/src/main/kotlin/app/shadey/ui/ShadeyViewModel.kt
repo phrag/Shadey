@@ -110,6 +110,15 @@ data class ShadeyUiState(
     // Current sun position at the map centre — drives the compass overlay.
     val sunAzimuthDeg: Double = 0.0,
     val sunElevationDeg: Double = 0.0,
+    // Live "you are here" marker. Tracking turns on when the user taps My-location and stays on
+    // (live, while foregrounded) for the session. Follow recenters the camera as they move until
+    // a manual pan disengages it.
+    val userTracking: Boolean = false,
+    val userFollow: Boolean = false,
+    val userLocation: LatLng? = null,
+    /** Heading in degrees clockwise from true north, or null until the orientation sensor reports. */
+    val userHeadingDeg: Float? = null,
+    val userGeoJson: String = GeoJsonWriter.emptyCollection(),
 ) {
     val selected: SpotSunInfo? get() = ranked.firstOrNull { it.spot.id == selectedId }
     val selectedRoute: ScoredRoute? get() = routeOptions.getOrNull(selectedRouteIdx)
@@ -495,6 +504,56 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun onCameraTargetConsumed() = _state.update { it.copy(cameraTarget = null) }
+
+    // --- Live location marker ("you are here") -----------------------------------------------
+
+    /**
+     * Begin showing and live-tracking the user's location marker, and follow them with the camera.
+     * Called from the My-location button (after the location permission is resolved). [initial] is
+     * the last-known fix used to centre immediately; continuous updates then arrive via
+     * [onUserLocation] from the UI layer's location/sensor listeners.
+     */
+    fun startLocationFollow(initial: LatLng?) {
+        _state.update {
+            it.copy(
+                userTracking = true,
+                userFollow = true,
+                userLocation = initial ?: it.userLocation,
+                userGeoJson = userMarkerJson(initial ?: it.userLocation, it.userHeadingDeg),
+                cameraTarget = initial ?: it.cameraTarget,
+            )
+        }
+        if (initial != null) center = initial
+    }
+
+    /** A new continuous location fix. Updates the marker and, while following, recentres the camera. */
+    fun onUserLocation(p: LatLng) {
+        if (!_state.value.userTracking) return
+        _state.update {
+            it.copy(
+                userLocation = p,
+                userGeoJson = userMarkerJson(p, it.userHeadingDeg),
+                cameraTarget = if (it.userFollow) p else it.cameraTarget,
+            )
+        }
+        if (_state.value.userFollow) center = p
+    }
+
+    /** A new device-orientation reading (degrees clockwise from true north). */
+    fun onUserHeading(deg: Float) {
+        if (!_state.value.userTracking) return
+        _state.update {
+            it.copy(userHeadingDeg = deg, userGeoJson = userMarkerJson(it.userLocation, deg))
+        }
+    }
+
+    /** A manual map gesture stops the camera following the user; the marker keeps tracking. */
+    fun disengageFollow() {
+        if (_state.value.userFollow) _state.update { it.copy(userFollow = false) }
+    }
+
+    private fun userMarkerJson(p: LatLng?, heading: Float?): String =
+        if (p == null) GeoJsonWriter.emptyCollection() else GeoJsonWriter.userMarker(p, heading)
 
     fun clearDropped() {
         sunnyWindowJob?.cancel()

@@ -21,6 +21,14 @@ https://github.com/phrag/shadey/releases.
   for search & downloads" setting.
 - A small arrow in the title pill now points at the current sun direction,
   hidden after dark.
+- Tap the My-location button to drop a live "you are here" marker — a person
+  silhouette with a translucent cone showing which way you're facing, read
+  from the device's orientation sensors and corrected to true north. The
+  marker tracks your position and heading live while the app is open, and the
+  map follows you as you move; panning the map yourself stops the follow (the
+  marker stays), and tapping My-location again re-centres and resumes it. The
+  sensors and location updates only run while the app is foregrounded, so
+  there's no background battery drain.
 
 **Routes**
 - New shady-route planner: tap the walking-person button, tap a start and a

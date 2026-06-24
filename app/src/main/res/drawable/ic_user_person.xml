@@ -1,6 +1,6 @@
-<!-- "You are here" marker: a white circular puck with a blue ring and a person silhouette,
-     drawn top-down (head above torso = "facing up") so it stays legible when rotated to the
-     user's heading. 96x96 viewport for a crisp bitmap. Each filled circle is stacked to form
+<!-- "You are here" marker: a white circular puck with a blue ring. The face glyph is drawn on top
+     of this at runtime (see MapStyles.personBitmap in ShadeyMapView.kt) since vector drawables
+     can't render text. 96x96 viewport for a crisp bitmap. Each filled circle is stacked to form
      the ring; no even-odd winding tricks. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="96dp"
@@ -20,14 +20,4 @@
     <path
         android:fillColor="#FFFFFF"
         android:pathData="M48,48m-25,0a25,25 0,1 0,50 0a25,25 0,1 0,-50 0" />
-
-    <!-- Person silhouette, facing "up" / north in icon space -->
-    <!-- Head -->
-    <path
-        android:fillColor="#1A73E8"
-        android:pathData="M48,35m-8,0a8,8 0,1 0,16 0a8,8 0,1 0,-16 0" />
-    <!-- Shoulders / torso -->
-    <path
-        android:fillColor="#1A73E8"
-        android:pathData="M33,63 C33,53 40,47 48,47 C56,47 63,53 63,63 Z" />
 </vector>

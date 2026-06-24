@@ -3,6 +3,7 @@ package app.shadey.map
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Paint
 import android.graphics.RectF
 import android.os.Handler
 import android.os.Looper
@@ -228,7 +229,7 @@ private object MapStyles {
         style.addSource(GeoJsonSource("user", GeoJsonWriter.emptyCollection()))
 
         style.addImage(CONE_IMAGE, drawableToBitmap(context, R.drawable.ic_user_heading_cone, 168))
-        style.addImage(PERSON_IMAGE, drawableToBitmap(context, R.drawable.ic_user_person, 90))
+        style.addImage(PERSON_IMAGE, personBitmap(context, 90))
 
         // Ground shadows — inserted below road labels so they show on top of ground/parks
         // but don't cover street text. "road_label" is a stable layer in the Liberty style.
@@ -302,6 +303,22 @@ private object MapStyles {
         val canvas = Canvas(bitmap)
         drawable.setBounds(0, 0, sizePx, sizePx)
         drawable.draw(canvas)
+        return bitmap
+    }
+
+    /** The "you are here" puck (see [ic_user_person]) with a "ツ" face drawn on top — vector
+     *  drawables can't render text, so the glyph is painted onto the rasterised bitmap directly. */
+    private fun personBitmap(context: Context, sizePx: Int): Bitmap {
+        val bitmap = drawableToBitmap(context, R.drawable.ic_user_person, sizePx)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.parseColor("#1A73E8")
+            textAlign = Paint.Align.CENTER
+            textSize = sizePx * 0.5f
+            isFakeBoldText = true
+        }
+        val canvas = Canvas(bitmap)
+        val baselineShift = (paint.descent() + paint.ascent()) / 2f
+        canvas.drawText("ツ", sizePx / 2f, sizePx / 2f - baselineShift, paint)
         return bitmap
     }
 }

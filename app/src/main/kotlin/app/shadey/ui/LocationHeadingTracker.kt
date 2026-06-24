@@ -8,6 +8,7 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Build
@@ -56,8 +57,16 @@ fun LocationHeadingTracker(
         // Latest fix, kept so the magnetic-declination correction (magnetic → true north) can use
         // the user's actual position.
         var lastLocation: LatLng? = null
+        // The fix the marker is currently showing, kept so a new one can be weighed against it —
+        // GPS and Network providers are both registered below and fire independently, and without
+        // this the marker snaps back and forth onto whichever one happened to report last, even
+        // when it's far less accurate (Network fixes can easily be 100+ m off).
+        var lastAccepted: Location? = null
 
         val locationListener = LocationListener { loc ->
+            val accepted = lastAccepted
+            if (accepted != null && !isBetterLocation(loc, accepted)) return@LocationListener
+            lastAccepted = loc
             val p = LatLng(loc.latitude, loc.longitude)
             lastLocation = p
             currentOnLocation(p)
@@ -137,6 +146,27 @@ fun LocationHeadingTracker(
     }
 }
 
+/**
+ * Whether [new] should replace [current] as the live fix. Loosely follows Android's classic
+ * "best location" heuristic: a much newer fix wins outright (a stale one isn't worth keeping just
+ * because it was more accurate), otherwise prefer whichever is more accurate, and only let a less
+ * accurate same-or-newer fix through if it isn't drastically worse.
+ */
+private fun isBetterLocation(new: Location, current: Location): Boolean {
+    val timeDeltaMs = new.time - current.time
+    if (timeDeltaMs > TWO_MINUTES_MS) return true
+    if (timeDeltaMs < -TWO_MINUTES_MS) return false
+    val accuracyDelta = new.accuracy - current.accuracy
+    val isSignificantlyLessAccurate = accuracyDelta > 200f
+    return when {
+        accuracyDelta <= 0f -> true
+        timeDeltaMs >= 0 && !isSignificantlyLessAccurate -> true
+        else -> false
+    }
+}
+
+private const val TWO_MINUTES_MS = 2 * 60 * 1000L
+
 /** Exponentially smooths a compass angle, taking the shortest path across the 0°/360° wrap. */
 private fun smoothAngle(previous: Float, next: Float, alpha: Float = 0.18f): Float {
     if (previous.isNaN()) return next
@@ -155,10 +185,17 @@ private fun displayRotation(context: Context): Int =
         (context.getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay.rotation
     }
 
-/** Axis remap so the heading is correct regardless of how the screen is currently rotated. */
+/**
+ * Axis remap so the heading is correct regardless of how the screen is currently rotated.
+ *
+ * Walking-navigation use means the phone is held upright facing the user, not flat on a table —
+ * remapping onto the device's Z axis (rather than Y) is the standard correction for that "vertical
+ * compass" posture. Getting this wrong doesn't just bias the heading, it puts [SensorManager.getOrientation]
+ * near gimbal lock for a phone held near-vertical, which reads as the direction "jumping around".
+ */
 private fun remapAxesForDisplay(rotation: Int): Pair<Int, Int> = when (rotation) {
-    Surface.ROTATION_90 -> SensorManager.AXIS_Y to SensorManager.AXIS_MINUS_X
-    Surface.ROTATION_180 -> SensorManager.AXIS_MINUS_X to SensorManager.AXIS_MINUS_Y
-    Surface.ROTATION_270 -> SensorManager.AXIS_MINUS_Y to SensorManager.AXIS_X
-    else -> SensorManager.AXIS_X to SensorManager.AXIS_Y
+    Surface.ROTATION_90 -> SensorManager.AXIS_Z to SensorManager.AXIS_MINUS_X
+    Surface.ROTATION_180 -> SensorManager.AXIS_MINUS_X to SensorManager.AXIS_MINUS_Z
+    Surface.ROTATION_270 -> SensorManager.AXIS_MINUS_Z to SensorManager.AXIS_X
+    else -> SensorManager.AXIS_X to SensorManager.AXIS_Z
 }

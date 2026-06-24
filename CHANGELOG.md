@@ -21,8 +21,8 @@ https://github.com/phrag/shadey/releases.
   for search & downloads" setting.
 - A small arrow in the title pill now points at the current sun direction,
   hidden after dark.
-- Tap the My-location button to drop a live "you are here" marker — a person
-  silhouette with a translucent cone showing which way you're facing, read
+- Tap the My-location button to drop a live "you are here" marker — a smiley
+  face (ツ) with a translucent cone showing which way you're facing, read
   from the device's orientation sensors and corrected to true north. The
   marker tracks your position and heading live while the app is open, and the
   map follows you as you move; panning the map yourself stops the follow (the
@@ -54,6 +54,13 @@ https://github.com/phrag/shadey/releases.
   route.
 
 **Fixes**
+- Fixed the live "you are here" marker's heading jumping around and reading slightly wrong when
+  the phone is held upright (the normal way to look at the map while walking) — the sensor axis
+  remap was tuned for a phone lying flat, which put the orientation calculation right at gimbal
+  lock for an upright phone. Also stopped the marker's position from snapping back and forth: GPS
+  and network location fixes are now weighed against each other (preferring whichever is more
+  accurate and recent) instead of just rendering whichever provider happened to report last, since
+  network fixes can be 100+ m off from a concurrent GPS fix.
 - Fixed the map jumping to a previously-downloaded city out of nowhere while browsing
   somewhere else entirely (e.g. mid-pan around Berlin suddenly landing in Palermo). The
   app silently restores your last-used downloaded city on launch — and Android can quietly

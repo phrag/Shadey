@@ -62,12 +62,18 @@ fun LocationHeadingTracker(
         // this the marker snaps back and forth onto whichever one happened to report last, even
         // when it's far less accurate (Network fixes can easily be 100+ m off).
         var lastAccepted: Location? = null
+        // The smoothed position actually shown. A stationary phone's GPS still wanders several
+        // metres second to second; low-passing it here stops the marker — and the follow camera —
+        // from hopping while you stand still, without noticeably lagging a real walk.
+        var displayed: LatLng? = null
 
         val locationListener = LocationListener { loc ->
             val accepted = lastAccepted
             if (accepted != null && !isBetterLocation(loc, accepted)) return@LocationListener
             lastAccepted = loc
-            val p = LatLng(loc.latitude, loc.longitude)
+            val raw = LatLng(loc.latitude, loc.longitude)
+            val p = displayed?.let { smoothLocation(it, raw) } ?: raw
+            displayed = p
             lastLocation = p
             currentOnLocation(p)
         }
@@ -77,6 +83,7 @@ fun LocationHeadingTracker(
             private val remapped = FloatArray(9)
             private val orientation = FloatArray(3)
             private var smoothed = Float.NaN
+            private var emitted = Float.NaN
 
             override fun onSensorChanged(event: SensorEvent) {
                 if (event.sensor.type != Sensor.TYPE_ROTATION_VECTOR) return
@@ -92,7 +99,13 @@ fun LocationHeadingTracker(
                 }
                 deg = ((deg % 360f) + 360f) % 360f
                 smoothed = smoothAngle(smoothed, deg)
-                currentOnHeading(smoothed)
+                // Deadband: the magnetometer dithers by a degree or two even when the phone is
+                // perfectly still, which reads as the cone shimmering. Only push a new heading once
+                // it has actually turned past a small threshold.
+                if (emitted.isNaN() || angleDelta(emitted, smoothed) >= HEADING_MIN_DELTA_DEG) {
+                    emitted = smoothed
+                    currentOnHeading(smoothed)
+                }
             }
 
             override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
@@ -167,6 +180,12 @@ private fun isBetterLocation(new: Location, current: Location): Boolean {
 
 private const val TWO_MINUTES_MS = 2 * 60 * 1000L
 
+// Below this much turn (degrees) a new heading is suppressed, killing magnetometer shimmer.
+private const val HEADING_MIN_DELTA_DEG = 2f
+// A position jump larger than this (metres) snaps straight through instead of being smoothed —
+// covers the first real GPS fix after a coarse network one and any genuine teleport.
+private const val LOCATION_SNAP_M = 25.0
+
 /** Exponentially smooths a compass angle, taking the shortest path across the 0°/360° wrap. */
 private fun smoothAngle(previous: Float, next: Float, alpha: Float = 0.18f): Float {
     if (previous.isNaN()) return next
@@ -175,6 +194,33 @@ private fun smoothAngle(previous: Float, next: Float, alpha: Float = 0.18f): Flo
     while (delta < -180f) delta += 360f
     val value = previous + alpha * delta
     return ((value % 360f) + 360f) % 360f
+}
+
+/** Shortest absolute angular distance between two compass bearings, in degrees [0, 180]. */
+private fun angleDelta(a: Float, b: Float): Float {
+    var delta = Math.abs(a - b) % 360f
+    if (delta > 180f) delta = 360f - delta
+    return delta
+}
+
+/**
+ * Low-passes the displayed position to damp stationary GPS jitter. Snaps through (no smoothing) on
+ * a jump beyond [LOCATION_SNAP_M] so real movement and provider switches aren't slowed to a crawl.
+ */
+private fun smoothLocation(previous: LatLng, next: LatLng, alpha: Double = 0.25): LatLng {
+    if (distanceMeters(previous, next) > LOCATION_SNAP_M) return next
+    return LatLng(
+        previous.lat + alpha * (next.lat - previous.lat),
+        previous.lng + alpha * (next.lng - previous.lng),
+    )
+}
+
+/** Rough metric distance between two coordinates (equirectangular approx — fine at this scale). */
+private fun distanceMeters(a: LatLng, b: LatLng): Double {
+    val meanLat = Math.toRadians((a.lat + b.lat) / 2.0)
+    val dLat = Math.toRadians(b.lat - a.lat)
+    val dLng = Math.toRadians(b.lng - a.lng) * Math.cos(meanLat)
+    return Math.sqrt(dLat * dLat + dLng * dLng) * 6_371_000.0
 }
 
 @Suppress("DEPRECATION")

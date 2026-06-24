@@ -272,9 +272,10 @@ private object MapStyles {
             ),
         )
         // Live "you are here" marker (drawn above everything else). The cone fans out in the
-        // facing direction and only appears once a heading reading exists ("cone" == true); the
-        // person silhouette sits on top of it. Both rotate by the per-feature "heading" property,
-        // aligned to the map so they point at the true-world bearing regardless of map rotation.
+        // facing direction and only appears once a heading reading exists ("cone" == true): it
+        // rotates by the per-feature "heading" property, aligned to the map so it points at the
+        // true-world bearing regardless of map rotation. The ツ face sits on top of it and stays
+        // upright (no rotation) so it's always readable, like a pin that the cone swings beneath.
         val coneLayer = SymbolLayer("user-cone-layer", "user").withProperties(
             PropertyFactory.iconImage(CONE_IMAGE),
             PropertyFactory.iconRotate(Expression.get("heading")),
@@ -288,8 +289,6 @@ private object MapStyles {
         style.addLayer(
             SymbolLayer("user-person-layer", "user").withProperties(
                 PropertyFactory.iconImage(PERSON_IMAGE),
-                PropertyFactory.iconRotate(Expression.get("heading")),
-                PropertyFactory.iconRotationAlignment(Property.ICON_ROTATION_ALIGNMENT_MAP),
                 PropertyFactory.iconAllowOverlap(true),
                 PropertyFactory.iconIgnorePlacement(true),
             ),

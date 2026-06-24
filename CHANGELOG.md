@@ -21,9 +21,10 @@ https://github.com/phrag/shadey/releases.
   for search & downloads" setting.
 - A small arrow in the title pill now points at the current sun direction,
   hidden after dark.
-- Tap the My-location button to drop a live "you are here" marker — a smiley
-  face (ツ) with a translucent cone showing which way you're facing, read
-  from the device's orientation sensors and corrected to true north. The
+- Tap the My-location button to drop a live "you are here" marker — an upright
+  ツ smiley face with a translucent cone that swings beneath it to show which
+  way you're facing, read from the device's orientation sensors and corrected
+  to true north. The
   marker tracks your position and heading live while the app is open, and the
   map follows you as you move; panning the map yourself stops the follow (the
   marker stays), and tapping My-location again re-centres and resumes it. The
@@ -57,10 +58,14 @@ https://github.com/phrag/shadey/releases.
 - Fixed the live "you are here" marker's heading jumping around and reading slightly wrong when
   the phone is held upright (the normal way to look at the map while walking) — the sensor axis
   remap was tuned for a phone lying flat, which put the orientation calculation right at gimbal
-  lock for an upright phone. Also stopped the marker's position from snapping back and forth: GPS
-  and network location fixes are now weighed against each other (preferring whichever is more
-  accurate and recent) instead of just rendering whichever provider happened to report last, since
-  network fixes can be 100+ m off from a concurrent GPS fix.
+  lock for an upright phone. Also stopped the marker's position from hopping around while you stand
+  still: GPS and network fixes are now weighed against each other (preferring whichever is more
+  accurate and recent) instead of rendering whichever provider reported last — network fixes can be
+  100+ m off from a concurrent GPS fix — and the shown position is low-pass smoothed so the few
+  metres of jitter a stationary phone's GPS produces every second no longer drag the marker and the
+  follow-camera back and forth. The cone's tiny magnetometer shimmer is likewise damped with a
+  small turn threshold, and the ツ face now stays upright while only the cone rotates, so the face
+  is always readable.
 - Fixed the map jumping to a previously-downloaded city out of nowhere while browsing
   somewhere else entirely (e.g. mid-pan around Berlin suddenly landing in Palermo). The
   app silently restores your last-used downloaded city on launch — and Android can quietly

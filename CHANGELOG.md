@@ -92,6 +92,15 @@ https://github.com/phrag/shadey/releases.
   and even while standing inside Berlin or a downloaded city, where the result was thrown away
   immediately). The map now asks the view model first, and skips the query outright unless it could
   actually change anything — outside a bundled/downloaded city and only after real movement.
+- Smoothed out the "you are here" marker still hopping around while standing still. Two remaining
+  causes: a coarse network location fix (often 50+ m off) was still being accepted over a good GPS
+  fix as long as it was newer and not wildly worse, then — because it was far away — snapped the
+  marker straight to it; and the position low-pass had no standstill deadband, so every metre of a
+  stationary phone's GPS wander still nudged the marker each second. Now a fix that's meaningfully
+  less accurate than the one already shown is rejected outright, and while you're not actually
+  moving any fix landing within the GPS's own uncertainty is treated as noise and ignored, so the
+  marker sits still when you do. While walking it switches to a more responsive filter so it keeps
+  up without lag.
 - Fixed the map jumping to a previously-downloaded city out of nowhere while browsing
   somewhere else entirely (e.g. mid-pan around Berlin suddenly landing in Palermo). The
   app silently restores your last-used downloaded city on launch — and Android can quietly

@@ -104,7 +104,7 @@ fun LocationHeadingTracker(
             if (accepted != null && !isBetterLocation(loc, accepted)) return@LocationListener
             lastAccepted = loc
             val raw = LatLng(loc.latitude, loc.longitude)
-            val p = displayed?.let { smoothLocation(it, raw) } ?: raw
+            val p = displayed?.let { smoothLocation(it, raw, loc) } ?: raw
             displayed = p
             lastLocation = p
             currentOnLocation(p)
@@ -223,24 +223,41 @@ fun LocationHeadingTracker(
  */
 private fun isBetterLocation(new: Location, current: Location): Boolean {
     val timeDeltaMs = new.time - current.time
+    // A long-stale current fix is worth replacing even with a coarser one (e.g. GPS dropped and only
+    // Network is left) — otherwise we'd freeze on an old position.
     if (timeDeltaMs > TWO_MINUTES_MS) return true
     if (timeDeltaMs < -TWO_MINUTES_MS) return false
     val accuracyDelta = new.accuracy - current.accuracy
-    val isSignificantlyLessAccurate = accuracyDelta > 200f
     return when {
+        // More (or equally) accurate — always take it.
         accuracyDelta <= 0f -> true
-        timeDeltaMs >= 0 && !isSignificantlyLessAccurate -> true
+        // Only a little worse but fresh — fine; this is normal GPS accuracy breathing.
+        accuracyDelta <= ACCURACY_TOLERANCE_M && timeDeltaMs >= 0 -> true
+        // Meaningfully less accurate (the classic case: a ~50 m Network fix arriving over a ~10 m
+        // GPS one) — reject it. Accepting it is what teleported the marker tens of metres and then
+        // snapped it back on the next GPS fix.
         else -> false
     }
 }
 
 private const val TWO_MINUTES_MS = 2 * 60 * 1000L
+// A new fix more than this much less accurate (metres) than the one we're showing is rejected, so a
+// coarse Network fix can't snap the marker away from a good GPS position.
+private const val ACCURACY_TOLERANCE_M = 30f
 
 // Below this much turn (degrees) a new heading is suppressed, killing magnetometer shimmer.
 private const val HEADING_MIN_DELTA_DEG = 2f
 // A position jump larger than this (metres) snaps straight through instead of being smoothed —
 // covers the first real GPS fix after a coarse network one and any genuine teleport.
 private const val LOCATION_SNAP_M = 25.0
+// While stationary, a fix within this radius (metres, scaled to the fix's reported accuracy) of the
+// shown position is treated as jitter and ignored, holding the marker still.
+private const val STATIONARY_DEADBAND_MIN_M = 3.0
+private const val STATIONARY_DEADBAND_MAX_M = 10.0
+// Low-pass factors: gentle when stopped (only used for the rare stationary move between the deadband
+// and the snap distance), responsive when actually walking so the marker keeps up.
+private const val STILL_ALPHA = 0.15
+private const val MOVING_ALPHA = 0.4
 // Above this speed (m/s ≈ 2.5 km/h, a slow walk) GPS course-over-ground drives the heading instead
 // of the compass; below it the bearing is mostly noise so the magnetometer is preferred.
 private const val COURSE_MIN_SPEED_MPS = 0.7f
@@ -273,11 +290,24 @@ private fun angleDelta(a: Float, b: Float): Float {
 }
 
 /**
- * Low-passes the displayed position to damp stationary GPS jitter. Snaps through (no smoothing) on
- * a jump beyond [LOCATION_SNAP_M] so real movement and provider switches aren't slowed to a crawl.
+ * Low-passes the displayed position to damp GPS jitter. Three regimes:
+ *  - a jump beyond [LOCATION_SNAP_M] snaps straight through (real movement or a provider switch);
+ *  - while stationary (no usable speed), any movement that fits inside the fix's own uncertainty is
+ *    ignored entirely — that's wander, not walking — so the marker sits rock-still at a standstill;
+ *  - while actually moving, a responsive low-pass tracks you with minimal lag.
  */
-private fun smoothLocation(previous: LatLng, next: LatLng, alpha: Double = 0.25): LatLng {
-    if (distanceMeters(previous, next) > LOCATION_SNAP_M) return next
+private fun smoothLocation(previous: LatLng, next: LatLng, loc: Location): LatLng {
+    val d = distanceMeters(previous, next)
+    if (d > LOCATION_SNAP_M) return next
+    val moving = loc.hasSpeed() && loc.speed >= COURSE_MIN_SPEED_MPS
+    if (!moving) {
+        // Deadband scaled to the reported accuracy: a fix landing within where we already believe we
+        // are is statistically indistinguishable from staying put, so hold. This is what kills the
+        // few-metres-a-second hop of a standing phone (and stops it dragging the follow camera).
+        val deadband = loc.accuracy.toDouble().coerceIn(STATIONARY_DEADBAND_MIN_M, STATIONARY_DEADBAND_MAX_M)
+        if (d <= deadband) return previous
+    }
+    val alpha = if (moving) MOVING_ALPHA else STILL_ALPHA
     return LatLng(
         previous.lat + alpha * (next.lat - previous.lat),
         previous.lng + alpha * (next.lng - previous.lng),

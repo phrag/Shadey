@@ -67,6 +67,24 @@ jobs:
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
+      - name: Publish dev build
+        # A single, always-overwritten pre-release so there's one stable, bookmarkable place to
+        # grab the latest dev build — unlike workflow-run artifacts, this needs no GitHub login
+        # and isn't tied to any one branch or run.
+        if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dev-build
+          name: "Shadey dev build (latest)"
+          body: |
+            Automatically rebuilt and replaced on every push to a `claude/**` branch or `main`.
+            Not a stable release — for testing in-progress work.
+
+            Branch: `${{ github.ref_name }}`
+            Commit: ${{ github.sha }}
+          prerelease: true
+          files: app/build/outputs/apk/debug/*.apk
+
       - name: Rename APK for release
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
         run: |

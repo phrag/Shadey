@@ -158,6 +158,12 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         downloadedCity?.let { BoundingBox(it.south, it.west, it.north, it.east) }
     private var center: LatLng = initialTarget
     private var bounds: ClosedBounds? = null
+    // Centre at the last camera-idle that actually triggered a recompute. Follow-camera re-centres
+    // on every GPS fix (roughly once a second while walking), and each recompute rebuilds the shadow
+    // GeoJSON and pushes it into the native map source — expensive enough to stall the main thread
+    // for hundreds of ms. A walking-pace nudge of a metre or two can't change which buildings are in
+    // view or the spot ranking, so only re-trigger once the centre has moved meaningfully.
+    private var lastRecomputeCenter: LatLng? = null
     private var recomputeJob: Job? = null
     private var buildingsJob: Job? = null
     private var frameJob: Job? = null
@@ -623,10 +629,16 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update { it.copy(sourceLabel = "Loading buildings…") }
             }
         }
-        // Force a re-rank: the spot order now depends on distance from the map centre,
-        // not just the sun's position, so a moved centre must always refresh it.
-        recompute(rank = true)
-        fetchWeather(newCenter)
+        // Force a re-rank: the spot order now depends on distance from the map centre, not just
+        // the sun's position, so a moved centre must always refresh it — but skip the (expensive)
+        // recompute entirely for sub-threshold moves, e.g. follow-camera nudging the view by a
+        // metre or two on every GPS fix while walking. Nothing visible can change at that scale.
+        val last = lastRecomputeCenter
+        if (last == null || distanceMeters(last, newCenter) >= RECOMPUTE_MIN_MOVE_M) {
+            lastRecomputeCenter = newCenter
+            recompute(rank = true)
+            fetchWeather(newCenter)
+        }
     }
 
     /** Fetch (or reuse a cached) cloud cover/UV reading for [p]. Annotation only — never gates shade. */
@@ -1101,6 +1113,14 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         return dLat * dLat + dLng * dLng
     }
 
+    /** Rough metric distance between two coordinates (equirectangular approx — fine at this scale). */
+    private fun distanceMeters(a: LatLng, b: LatLng): Double {
+        val meanLat = Math.toRadians((a.lat + b.lat) / 2.0)
+        val dLat = Math.toRadians(b.lat - a.lat)
+        val dLng = Math.toRadians(b.lng - a.lng) * Math.cos(meanLat)
+        return Math.sqrt(dLat * dLat + dLng * dLng) * 6_371_000.0
+    }
+
     private companion object {
         // Closest N buildings only — distant ones cast negligible shadows and dominate CPU time.
         const val MAX_SHADOWS = 600
@@ -1111,6 +1131,11 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         // How far the map centre can drift from the held buildings' bounding box before that
         // data is considered stale for the current view (see onCameraIdle).
         const val STALE_DATA_MARGIN_M = 3_000.0
+        // Minimum centre movement (metres) between camera-idle events before a full recompute
+        // runs again — throttles follow-camera, which re-centres on every ~1s GPS fix while
+        // walking, from rebuilding the shadow GeoJSON and pushing it into the map far more often
+        // than anything visible could actually change.
+        const val RECOMPUTE_MIN_MOVE_M = 15.0
         // Background update checks run at most once per day.
         const val UPDATE_CHECK_INTERVAL_MS = 24L * 60 * 60 * 1000
         // Route shade-scoring sample spacing — fine enough to catch individual buildings'

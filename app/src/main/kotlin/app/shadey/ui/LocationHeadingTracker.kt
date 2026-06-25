@@ -113,8 +113,12 @@ fun LocationHeadingTracker(
             currentOnLocation(p)
             // Course-over-ground is already true-north referenced (no declination needed). Use it
             // as the heading whenever we're moving fast enough for it to be meaningful — below that
-            // the bearing is just GPS noise and the compass is better.
-            if (loc.hasBearing() && loc.hasSpeed() && loc.speed >= COURSE_MIN_SPEED_MPS) {
+            // the bearing is just GPS noise and the compass is better. Also require a decent
+            // reported bearing accuracy: multipath in built-up areas (tall buildings reflecting the
+            // signal) can make the course wildly wrong right at walking speed, and trusting it
+            // unconditionally is what reads as the heading suddenly being "way off".
+            val bearingTrustworthy = !loc.hasBearingAccuracy() || loc.bearingAccuracyDegrees <= COURSE_MAX_BEARING_ACCURACY_DEG
+            if (loc.hasBearing() && loc.hasSpeed() && loc.speed >= COURSE_MIN_SPEED_MPS && bearingTrustworthy) {
                 lastCourseAtMs = SystemClock.elapsedRealtime()
                 emitHeading(loc.bearing)
             }
@@ -236,6 +240,9 @@ private const val LOCATION_SNAP_M = 25.0
 // Above this speed (m/s ≈ 2.5 km/h, a slow walk) GPS course-over-ground drives the heading instead
 // of the compass; below it the bearing is mostly noise so the magnetometer is preferred.
 private const val COURSE_MIN_SPEED_MPS = 0.7f
+// Above this reported bearing accuracy (degrees) the GPS course is too unreliable to trust over
+// the compass — common in urban canyons where building reflections degrade the fix.
+private const val COURSE_MAX_BEARING_ACCURACY_DEG = 45f
 // How long a GPS-course heading keeps priority over the compass after the last qualifying fix, so a
 // brief pause between fixes (or at a crossing) doesn't immediately hand the arrow back to a noisier
 // magnetometer reading.

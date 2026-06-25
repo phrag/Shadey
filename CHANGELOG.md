@@ -69,6 +69,16 @@ https://github.com/phrag/shadey/releases.
   follow-camera back and forth. The cone's tiny magnetometer shimmer is likewise damped with a
   small turn threshold, and the ツ face now stays upright while only the cone rotates, so the face
   is always readable.
+- Fixed the marker (and the whole map) still stuttering and jumping while walking with follow-me
+  on — the follow camera re-centres on every GPS fix (about once a second), and each re-centre was
+  triggering a full shade recompute and rebuilding the entire shadow map layer from scratch, which
+  could stall the main thread for the better part of a second. A walking-pace nudge of a metre or
+  two can't change which buildings are in view or how spots rank, so recompute now only re-runs
+  once the map centre has actually moved a meaningful distance.
+- The live heading arrow no longer trusts a GPS-derived travel direction with poor reported
+  accuracy — multipath off nearby buildings can otherwise feed a wildly wrong bearing straight into
+  the arrow while walking, which read as the direction being "way off" even though the compass
+  itself was fine.
 - Fixed the map jumping to a previously-downloaded city out of nowhere while browsing
   somewhere else entirely (e.g. mid-pan around Berlin suddenly landing in Palermo). The
   app silently restores your last-used downloaded city on launch — and Android can quietly

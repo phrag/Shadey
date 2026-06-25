@@ -11,6 +11,7 @@ import androidx.annotation.DrawableRes
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -51,6 +52,24 @@ private const val BUILDING_MIN_ZOOM = 14.0
 /** Milliseconds to wait before executing a building query after the last trigger fires. */
 private const val QUERY_DEBOUNCE_MS = 400L
 
+// Live-marker glide (Organic-Maps-style position interpolation). Per-frame easing factor toward the
+// latest fix; a jump beyond the snap distance is placed instantly (not crawled); the glide ends once
+// within the converge distance so a stationary marker stops requesting frames.
+private const val MARKER_GLIDE_ALPHA = 0.2
+private const val MARKER_SNAP_M = 25.0
+private const val MARKER_CONVERGE_M = 0.5
+
+/** Holds the currently-drawn marker position across recompositions so each new fix glides from it. */
+private class MarkerGlideState(var drawn: CoreLatLng? = null)
+
+/** Rough metric distance between two coordinates (equirectangular approx — fine at marker scale). */
+private fun distanceMeters(a: CoreLatLng, b: CoreLatLng): Double {
+    val meanLat = Math.toRadians((a.lat + b.lat) / 2.0)
+    val dLat = Math.toRadians(b.lat - a.lat)
+    val dLng = Math.toRadians(b.lng - a.lng) * Math.cos(meanLat)
+    return Math.sqrt(dLat * dLat + dLng * dLng) * 6_371_000.0
+}
+
 private class MapHandle(val map: MapLibreMap, val style: Style)
 
 /**
@@ -65,7 +84,8 @@ fun ShadeyMap(
     spotsGeoJson: String,
     pinGeoJson: String,
     routeGeoJson: String,
-    userGeoJson: String,
+    userLocation: CoreLatLng?,
+    userHeading: Float?,
     cameraTarget: CoreLatLng?,
     onMapClick: (CoreLatLng) -> Unit,
     onMapLongClick: (CoreLatLng) -> Unit,
@@ -210,8 +230,44 @@ fun ShadeyMap(
     LaunchedEffect(handle, routeGeoJson) {
         handle?.style?.getSourceAs<GeoJsonSource>("route")?.setGeoJson(routeGeoJson)
     }
-    LaunchedEffect(handle, userGeoJson) {
-        handle?.style?.getSourceAs<GeoJsonSource>("user")?.setGeoJson(userGeoJson)
+    // Glide the live location marker between fixes instead of teleporting to each one, the way
+    // Organic Maps animates its position puck (its MyPositionController interpolates the drawn
+    // position over a duration rather than jumping). A GPS fix lands ~once a second; snapping the
+    // dot to each makes a walk look like a series of hops and visually amplifies any residual
+    // jitter. Here the drawn position eases toward the latest fix each frame, and the (already
+    // upstream-smoothed) heading is applied as-is. Keyed on the fix/heading, so each new value
+    // cancels the in-flight glide and continues from wherever the dot currently is; once it has
+    // essentially arrived the loop ends and no further frames are requested, so a stationary
+    // marker costs nothing. The "user" source holds a single point, so these per-frame rewrites
+    // never touch the shadow/building pipeline.
+    val markerGlide = remember { MarkerGlideState() }
+    LaunchedEffect(handle, userLocation, userHeading) {
+        val source = handle?.style?.getSourceAs<GeoJsonSource>("user") ?: return@LaunchedEffect
+        val target = userLocation
+        if (target == null) {
+            markerGlide.drawn = null
+            source.setGeoJson(GeoJsonWriter.emptyCollection())
+            return@LaunchedEffect
+        }
+        val start = markerGlide.drawn
+        // First fix, or a jump too large to be a step (provider switch / teleport): place directly.
+        if (start == null || distanceMeters(start, target) > MARKER_SNAP_M) {
+            markerGlide.drawn = target
+            source.setGeoJson(GeoJsonWriter.userMarker(target, userHeading))
+            return@LaunchedEffect
+        }
+        var cur: CoreLatLng = start
+        while (distanceMeters(cur, target) > MARKER_CONVERGE_M) {
+            withFrameNanos { }
+            cur = CoreLatLng(
+                cur.lat + MARKER_GLIDE_ALPHA * (target.lat - cur.lat),
+                cur.lng + MARKER_GLIDE_ALPHA * (target.lng - cur.lng),
+            )
+            markerGlide.drawn = cur
+            source.setGeoJson(GeoJsonWriter.userMarker(cur, userHeading))
+        }
+        markerGlide.drawn = target
+        source.setGeoJson(GeoJsonWriter.userMarker(target, userHeading))
     }
     LaunchedEffect(handle, cameraTarget) {
         val h = handle ?: return@LaunchedEffect

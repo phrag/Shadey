@@ -68,9 +68,9 @@ fun LocationHeadingTracker(
         // this the marker snaps back and forth onto whichever one happened to report last, even
         // when it's far less accurate (Network fixes can easily be 100+ m off).
         var lastAccepted: Location? = null
-        // The smoothed position actually shown. A stationary phone's GPS still wanders several
-        // metres second to second; low-passing it here stops the marker — and the follow camera —
-        // from hopping while you stand still, without noticeably lagging a real walk.
+        // The position actually shown. The map layer eases the drawn marker toward this between
+        // fixes (Organic-Maps-style), so we don't low-pass here — this holds the last fix we decided
+        // was a real move rather than jitter, and the renderer glides to it.
         var displayed: LatLng? = null
 
         // --- Shared heading state, fed by both the GPS course and the compass ---
@@ -101,13 +101,32 @@ fun LocationHeadingTracker(
 
         val locationListener = LocationListener { loc ->
             val accepted = lastAccepted
+            // Provider arbitration: don't let a coarse Network fix replace a good GPS one.
             if (accepted != null && !isBetterLocation(loc, accepted)) return@LocationListener
-            lastAccepted = loc
             val raw = LatLng(loc.latitude, loc.longitude)
-            val p = displayed?.let { smoothLocation(it, raw, loc) } ?: raw
-            displayed = p
-            lastLocation = p
-            currentOnLocation(p)
+            val shown = displayed
+            if (shown != null && accepted != null) {
+                val moved = distanceMeters(shown, raw)
+                // Organic Maps' jitter test (gps_track_filter.cpp IsGoodPoint): a fix landing inside
+                // the accuracy circle of the position we're already showing — and not itself markedly
+                // more accurate (≥2×) — is indistinguishable from staying put, so hold the marker.
+                // This, not a low-pass, is what keeps the dot still while you stand: the anchor point
+                // doesn't move, so successive wandering fixes keep getting rejected. A genuine step
+                // (beyond the circle) or a sudden much-better fix passes through and becomes the new
+                // target, which the renderer then glides to. A jump beyond the snap distance always
+                // passes (provider switch / teleport).
+                val lastAcc = if (accepted.hasAccuracy()) accepted.accuracy.toDouble() else 0.0
+                val newAcc = if (loc.hasAccuracy()) loc.accuracy.toDouble() else lastAcc
+                val circle = lastAcc.coerceIn(STATIONARY_DEADBAND_MIN_M, STATIONARY_DEADBAND_MAX_M)
+                val muchMoreAccurate = lastAcc > 0.0 && newAcc <= 0.5 * lastAcc
+                if (moved <= LOCATION_SNAP_M && moved < circle && !muchMoreAccurate) {
+                    return@LocationListener
+                }
+            }
+            lastAccepted = loc
+            displayed = raw
+            lastLocation = raw
+            currentOnLocation(raw)
             // Course-over-ground is already true-north referenced (no declination needed). Use it
             // as the heading whenever we're moving fast enough for it to be meaningful — below that
             // the bearing is just GPS noise and the compass is better. Also require a decent
@@ -247,17 +266,13 @@ private const val ACCURACY_TOLERANCE_M = 30f
 
 // Below this much turn (degrees) a new heading is suppressed, killing magnetometer shimmer.
 private const val HEADING_MIN_DELTA_DEG = 2f
-// A position jump larger than this (metres) snaps straight through instead of being smoothed —
-// covers the first real GPS fix after a coarse network one and any genuine teleport.
+// A position jump larger than this (metres) is always accepted — covers the first real GPS fix
+// after a coarse network one and any genuine teleport, neither of which should be held as "jitter".
 private const val LOCATION_SNAP_M = 25.0
-// While stationary, a fix within this radius (metres, scaled to the fix's reported accuracy) of the
-// shown position is treated as jitter and ignored, holding the marker still.
+// The jitter circle: a fix within this radius (metres) of the shown position — clamped to the fix's
+// reported accuracy — is treated as wander and ignored, so the marker holds still while you stand.
 private const val STATIONARY_DEADBAND_MIN_M = 3.0
 private const val STATIONARY_DEADBAND_MAX_M = 10.0
-// Low-pass factors: gentle when stopped (only used for the rare stationary move between the deadband
-// and the snap distance), responsive when actually walking so the marker keeps up.
-private const val STILL_ALPHA = 0.15
-private const val MOVING_ALPHA = 0.4
 // Above this speed (m/s ≈ 2.5 km/h, a slow walk) GPS course-over-ground drives the heading instead
 // of the compass; below it the bearing is mostly noise so the magnetometer is preferred.
 private const val COURSE_MIN_SPEED_MPS = 0.7f
@@ -287,31 +302,6 @@ private fun angleDelta(a: Float, b: Float): Float {
     var delta = Math.abs(a - b) % 360f
     if (delta > 180f) delta = 360f - delta
     return delta
-}
-
-/**
- * Low-passes the displayed position to damp GPS jitter. Three regimes:
- *  - a jump beyond [LOCATION_SNAP_M] snaps straight through (real movement or a provider switch);
- *  - while stationary (no usable speed), any movement that fits inside the fix's own uncertainty is
- *    ignored entirely — that's wander, not walking — so the marker sits rock-still at a standstill;
- *  - while actually moving, a responsive low-pass tracks you with minimal lag.
- */
-private fun smoothLocation(previous: LatLng, next: LatLng, loc: Location): LatLng {
-    val d = distanceMeters(previous, next)
-    if (d > LOCATION_SNAP_M) return next
-    val moving = loc.hasSpeed() && loc.speed >= COURSE_MIN_SPEED_MPS
-    if (!moving) {
-        // Deadband scaled to the reported accuracy: a fix landing within where we already believe we
-        // are is statistically indistinguishable from staying put, so hold. This is what kills the
-        // few-metres-a-second hop of a standing phone (and stops it dragging the follow camera).
-        val deadband = loc.accuracy.toDouble().coerceIn(STATIONARY_DEADBAND_MIN_M, STATIONARY_DEADBAND_MAX_M)
-        if (d <= deadband) return previous
-    }
-    val alpha = if (moving) MOVING_ALPHA else STILL_ALPHA
-    return LatLng(
-        previous.lat + alpha * (next.lat - previous.lat),
-        previous.lng + alpha * (next.lng - previous.lng),
-    )
 }
 
 /** Rough metric distance between two coordinates (equirectangular approx — fine at this scale). */

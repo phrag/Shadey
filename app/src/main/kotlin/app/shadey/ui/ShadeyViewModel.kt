@@ -118,7 +118,6 @@ data class ShadeyUiState(
     val userLocation: LatLng? = null,
     /** Heading in degrees clockwise from true north, or null until the orientation sensor reports. */
     val userHeadingDeg: Float? = null,
-    val userGeoJson: String = GeoJsonWriter.emptyCollection(),
     /** True when the magnetometer is uncalibrated/disturbed, so the UI prompts the figure-8 wave.
      *  Only meaningful while tracking and when the heading is coming from the compass. */
     val compassNeedsCalibration: Boolean = false,
@@ -535,7 +534,6 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                 userTracking = true,
                 userFollow = true,
                 userLocation = initial ?: it.userLocation,
-                userGeoJson = userMarkerJson(initial ?: it.userLocation, it.userHeadingDeg),
                 cameraTarget = initial ?: it.cameraTarget,
             )
         }
@@ -557,7 +555,6 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         _state.update {
             it.copy(
                 userLocation = p,
-                userGeoJson = userMarkerJson(p, it.userHeadingDeg),
                 cameraTarget = if (moveCamera) p else it.cameraTarget,
             )
         }
@@ -567,9 +564,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     /** A new device-orientation reading (degrees clockwise from true north). */
     fun onUserHeading(deg: Float) {
         if (!_state.value.userTracking) return
-        _state.update {
-            it.copy(userHeadingDeg = deg, userGeoJson = userMarkerJson(it.userLocation, deg))
-        }
+        _state.update { it.copy(userHeadingDeg = deg) }
     }
 
     /** A manual map gesture stops the camera following the user; the marker keeps tracking. */
@@ -583,9 +578,6 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
             _state.update { it.copy(compassNeedsCalibration = needed) }
         }
     }
-
-    private fun userMarkerJson(p: LatLng?, heading: Float?): String =
-        if (p == null) GeoJsonWriter.emptyCollection() else GeoJsonWriter.userMarker(p, heading)
 
     fun clearDropped() {
         sunnyWindowJob?.cancel()

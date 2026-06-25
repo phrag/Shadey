@@ -92,15 +92,16 @@ https://github.com/phrag/shadey/releases.
   and even while standing inside Berlin or a downloaded city, where the result was thrown away
   immediately). The map now asks the view model first, and skips the query outright unless it could
   actually change anything — outside a bundled/downloaded city and only after real movement.
-- Smoothed out the "you are here" marker still hopping around while standing still. Two remaining
-  causes: a coarse network location fix (often 50+ m off) was still being accepted over a good GPS
-  fix as long as it was newer and not wildly worse, then — because it was far away — snapped the
-  marker straight to it; and the position low-pass had no standstill deadband, so every metre of a
-  stationary phone's GPS wander still nudged the marker each second. Now a fix that's meaningfully
-  less accurate than the one already shown is rejected outright, and while you're not actually
-  moving any fix landing within the GPS's own uncertainty is treated as noise and ignored, so the
-  marker sits still when you do. While walking it switches to a more responsive filter so it keeps
-  up without lag.
+- Reworked the "you are here" marker to stop it hopping around, following how Organic Maps handles
+  the same problem (two layers: filter the fixes, then animate the dot). On the filter side, a fix
+  that lands inside the accuracy circle of the position already shown — and isn't itself markedly
+  more accurate — is treated as GPS wander and ignored, so the anchor point doesn't move and the dot
+  sits still while you stand; a genuine step beyond that circle, or a much sharper fix, passes
+  through. A coarse network fix (often tens of metres off) is also no longer accepted over a good
+  GPS one. On the render side, the marker now eases smoothly toward each new fix instead of
+  teleporting to it — a once-a-second GPS update no longer looks like a hop, and the easing absorbs
+  the small residual jitter while walking. The marker stops requesting frames once it has arrived,
+  so a stationary dot costs nothing.
 - Fixed the map jumping to a previously-downloaded city out of nowhere while browsing
   somewhere else entirely (e.g. mid-pan around Berlin suddenly landing in Palermo). The
   app silently restores your last-used downloaded city on launch — and Android can quietly

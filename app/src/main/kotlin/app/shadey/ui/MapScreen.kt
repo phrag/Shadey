@@ -673,7 +673,8 @@ private fun ShadeyMapLayer(state: ShadeyUiState, vm: ShadeyViewModel) {
         spotsGeoJson = state.spotsGeoJson,
         pinGeoJson = state.pinGeoJson,
         routeGeoJson = state.routeGeoJson,
-        userGeoJson = state.userGeoJson,
+        userLocation = state.userLocation,
+        userHeading = state.userHeadingDeg,
         cameraTarget = state.cameraTarget,
         // While route-planning is active, taps set the origin/destination and long-press is
         // suspended (so you can't accidentally drop a spot pin while picking route points).

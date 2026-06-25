@@ -11,11 +11,8 @@ import android.hardware.SensorManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
-import android.os.Build
 import android.os.Looper
 import android.os.SystemClock
-import android.view.Surface
-import android.view.WindowManager
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -126,8 +123,6 @@ fun LocationHeadingTracker(
 
         val sensorListener = object : SensorEventListener {
             private val rotationMatrix = FloatArray(9)
-            private val remapped = FloatArray(9)
-            private val orientation = FloatArray(3)
 
             override fun onSensorChanged(event: SensorEvent) {
                 if (event.sensor.type != Sensor.TYPE_ROTATION_VECTOR) return
@@ -137,13 +132,22 @@ fun LocationHeadingTracker(
                     reportCalibration(event.values[4] > HEADING_ACCURACY_BAD_RAD)
                 }
                 // While GPS course is driving the arrow (we're moving), let it own the heading —
-                // the magnetometer is noisier than course-over-ground once walking.
+                // course-over-ground is steadier than the compass once walking.
                 if (SystemClock.elapsedRealtime() - lastCourseAtMs < COURSE_HOLD_MS) return
                 SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
-                val (axisX, axisY) = remapAxesForDisplay(displayRotation(context))
-                SensorManager.remapCoordinateSystem(rotationMatrix, axisX, axisY, remapped)
-                SensorManager.getOrientation(remapped, orientation)
-                var deg = Math.toDegrees(orientation[0].toDouble()).toFloat() // magnetic, [-180,180]
+                // Facing = the horizontal direction the phone points, built from two device axes in
+                // the world frame (ENU): the top edge (+Y) and the back of the phone (−Z). Both
+                // point the same way along the ground for a given facing, so summing their
+                // horizontal projections weights each by how horizontal it currently is. When the
+                // phone is flat the top edge leads; held upright to read the map, the back leads —
+                // one continuous formula, accurate at any tilt, with none of the gimbal-lock
+                // instability the old getOrientation-after-remap had near vertical (the cause of the
+                // heading being wrong/jumpy). Columns of R are each device axis in world coords:
+                // device +Y → (R[1],R[4],R[7]), device Z → (R[2],R[5],R[8]); ENU index 0=East,1=North.
+                val east = rotationMatrix[1] - rotationMatrix[2]
+                val north = rotationMatrix[4] - rotationMatrix[5]
+                if (east == 0f && north == 0f) return // phone exactly edge-on — no horizontal facing
+                var deg = Math.toDegrees(Math.atan2(east.toDouble(), north.toDouble())).toFloat()
                 lastLocation?.let { p ->
                     deg += GeomagneticField(
                         p.lat.toFloat(), p.lng.toFloat(), 0f, System.currentTimeMillis(),
@@ -286,27 +290,4 @@ private fun distanceMeters(a: LatLng, b: LatLng): Double {
     val dLat = Math.toRadians(b.lat - a.lat)
     val dLng = Math.toRadians(b.lng - a.lng) * Math.cos(meanLat)
     return Math.sqrt(dLat * dLat + dLng * dLng) * 6_371_000.0
-}
-
-@Suppress("DEPRECATION")
-private fun displayRotation(context: Context): Int =
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-        context.display?.rotation ?: Surface.ROTATION_0
-    } else {
-        (context.getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay.rotation
-    }
-
-/**
- * Axis remap so the heading is correct regardless of how the screen is currently rotated.
- *
- * Walking-navigation use means the phone is held upright facing the user, not flat on a table —
- * remapping onto the device's Z axis (rather than Y) is the standard correction for that "vertical
- * compass" posture. Getting this wrong doesn't just bias the heading, it puts [SensorManager.getOrientation]
- * near gimbal lock for a phone held near-vertical, which reads as the direction "jumping around".
- */
-private fun remapAxesForDisplay(rotation: Int): Pair<Int, Int> = when (rotation) {
-    Surface.ROTATION_90 -> SensorManager.AXIS_Z to SensorManager.AXIS_MINUS_X
-    Surface.ROTATION_180 -> SensorManager.AXIS_MINUS_X to SensorManager.AXIS_MINUS_Z
-    Surface.ROTATION_270 -> SensorManager.AXIS_MINUS_Z to SensorManager.AXIS_X
-    else -> SensorManager.AXIS_X to SensorManager.AXIS_Z
 }

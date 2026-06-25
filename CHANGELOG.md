@@ -70,15 +70,22 @@ https://github.com/phrag/shadey/releases.
   small turn threshold, and the ツ face now stays upright while only the cone rotates, so the face
   is always readable.
 - Fixed the marker (and the whole map) still stuttering and jumping while walking with follow-me
-  on — the follow camera re-centres on every GPS fix (about once a second), and each re-centre was
-  triggering a full shade recompute and rebuilding the entire shadow map layer from scratch, which
-  could stall the main thread for the better part of a second. A walking-pace nudge of a metre or
-  two can't change which buildings are in view or how spots rank, so recompute now only re-runs
-  once the map centre has actually moved a meaningful distance.
-- The live heading arrow no longer trusts a GPS-derived travel direction with poor reported
-  accuracy — multipath off nearby buildings can otherwise feed a wildly wrong bearing straight into
-  the arrow while walking, which read as the direction being "way off" even though the compass
-  itself was fine.
+  on. Two things compounded: outside a bundled/downloaded city the map re-harvests building
+  footprints from the rendered tiles on every frame, and the follow camera re-renders on every GPS
+  fix (about once a second) — so the app was re-parsing buildings and recomputing all shade several
+  times a second (visible as constant dropped frames and heavy garbage collection in device logs).
+  On top of that, the camera chased every fix, so a stationary phone's GPS wander slid the entire
+  map around under you. Now the camera only re-centres once you've actually moved a real distance,
+  the tile harvest and shade recompute are likewise gated on movement, and the marker itself still
+  updates every fix so it stays live — the map just holds still when you do.
+- Rebuilt how the live heading is read from the phone's sensors so it's accurate at any angle. The
+  previous approach picked a fixed sensor-axis remap based on screen rotation, which sat near a
+  mathematical singularity ("gimbal lock") when the phone was held upright to read the map — the
+  exact posture you walk with — making the direction wrong and jumpy. The facing is now derived
+  directly from the phone's orientation by projecting both the top edge and the back of the device
+  onto the ground and combining them, so whether the phone is flat or upright the cone points the
+  right way, smoothly, with no singularity. (Travel direction from GPS still takes over while you're
+  actually walking; the sensor reading drives the cone whenever you slow or stop.)
 - Fixed the map jumping to a previously-downloaded city out of nowhere while browsing
   somewhere else entirely (e.g. mid-pan around Berlin suddenly landing in Palermo). The
   app silently restores your last-used downloaded city on launch — and Android can quietly

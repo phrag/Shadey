@@ -164,6 +164,13 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     // for hundreds of ms. A walking-pace nudge of a metre or two can't change which buildings are in
     // view or the spot ranking, so only re-trigger once the centre has moved meaningfully.
     private var lastRecomputeCenter: LatLng? = null
+    // Position the camera last re-centred on while following. The map only follows once the user has
+    // moved a real distance, so a stationary phone's GPS wander doesn't slide the whole world about.
+    private var lastFollowTarget: LatLng? = null
+    // Centre at the last tile-building harvest. In tile mode the follow-camera's per-fix re-render
+    // would otherwise re-parse features and recompute shade several times a second; we already
+    // accumulate buildings across pans, so re-harvest only after moving a meaningful distance.
+    private var lastHarvestCenter: LatLng? = null
     private var recomputeJob: Job? = null
     private var buildingsJob: Job? = null
     private var frameJob: Job? = null
@@ -532,20 +539,29 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                 cameraTarget = initial ?: it.cameraTarget,
             )
         }
+        lastFollowTarget = initial
         if (initial != null) center = initial
     }
 
     /** A new continuous location fix. Updates the marker and, while following, recentres the camera. */
     fun onUserLocation(p: LatLng) {
         if (!_state.value.userTracking) return
+        val follow = _state.value.userFollow
+        // Only re-centre the camera once the user has actually moved a meaningful distance. Chasing
+        // every ~1 Hz fix slid the whole map under a standing user as the GPS wandered a few metres
+        // each second — which read as the location "jumping around". The marker itself still updates
+        // every fix, so it stays live; the camera just stops twitching.
+        val last = lastFollowTarget
+        val moveCamera = follow && (last == null || distanceMeters(last, p) >= FOLLOW_MIN_MOVE_M)
+        if (moveCamera) lastFollowTarget = p
         _state.update {
             it.copy(
                 userLocation = p,
                 userGeoJson = userMarkerJson(p, it.userHeadingDeg),
-                cameraTarget = if (it.userFollow) p else it.cameraTarget,
+                cameraTarget = if (moveCamera) p else it.cameraTarget,
             )
         }
-        if (_state.value.userFollow) center = p
+        if (follow) center = p
     }
 
     /** A new device-orientation reading (degrees clockwise from true north). */
@@ -625,6 +641,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
             if (coverage?.contains(newCenter) != true) {
                 activeBuildings = emptyList()
                 accumulated.clear()
+                lastHarvestCenter = null
                 forgetActiveCity()
                 _state.update { it.copy(sourceLabel = "Loading buildings…") }
             }
@@ -673,11 +690,21 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         // Bundled/downloaded-city data is more complete than tile queries — skip both regions.
         if (bundledRegion?.contains(center) == true) return
         if (downloadedCityRegion()?.contains(center) == true) return
+        // Throttle the tile-harvest path. The follow-camera re-renders the map on every GPS fix,
+        // and each render fires this query; without a gate it re-parses features and recomputes
+        // shade several times a second (the frame-skip + heavy-GC storm seen in device logs).
+        // Buildings accumulate across pans, so nothing new appears until we've actually moved.
+        if (!belowZoom && activeBuildings.isNotEmpty()) {
+            val lastHarvest = lastHarvestCenter
+            if (lastHarvest != null && distanceMeters(lastHarvest, center) < HARVEST_MIN_MOVE_M) return
+        }
+        val harvestCenter = center
         buildingsJob?.cancel()
         buildingsJob = viewModelScope.launch {
             if (belowZoom) {
                 accumulated.clear()
                 activeBuildings = emptyList()
+                lastHarvestCenter = null
                 _state.update { it.copy(sourceLabel = "Zoom in to see shade") }
                 recompute()
                 return@launch
@@ -697,6 +724,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                 accumulated.remove(oldest)
             }
             activeBuildings = accumulated.values.toList()
+            lastHarvestCenter = harvestCenter
             _state.update { it.copy(sourceLabel = "OpenStreetMap · ${activeBuildings.size} buildings") }
             recompute()
         }
@@ -1136,6 +1164,11 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         // walking, from rebuilding the shadow GeoJSON and pushing it into the map far more often
         // than anything visible could actually change.
         const val RECOMPUTE_MIN_MOVE_M = 15.0
+        // Minimum user movement (metres) before the follow-camera re-centres. Below this the map
+        // holds still so a stationary phone's GPS jitter doesn't slide the whole view around.
+        const val FOLLOW_MIN_MOVE_M = 8.0
+        // Minimum movement (metres) before the tile-building harvest re-runs (see onBuildingsQueried).
+        const val HARVEST_MIN_MOVE_M = 25.0
         // Background update checks run at most once per day.
         const val UPDATE_CHECK_INTERVAL_MS = 24L * 60 * 60 * 1000
         // Route shade-scoring sample spacing — fine enough to catch individual buildings'

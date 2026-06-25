@@ -72,6 +72,15 @@ jobs:
         if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
         run: cp app/build/outputs/apk/debug/app-debug.apk shadey-dev.apk
 
+      - name: Remove stale dev asset
+        # softprops/action-gh-release only overwrites assets matching the new filename, so the
+        # legacy app-debug.apk from earlier builds would otherwise linger on the release. Drop it
+        # if present; harmless once it's gone.
+        if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete-asset dev-build app-debug.apk --yes --repo "$GITHUB_REPOSITORY" || true
+
       - name: Publish dev build
         # A single, always-overwritten pre-release so there's one stable, bookmarkable place to
         # grab the latest dev build — unlike workflow-run artifacts, this needs no GitHub login

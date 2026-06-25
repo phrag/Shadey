@@ -67,6 +67,11 @@ jobs:
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
+      - name: Name dev APK
+        # Give the published asset a friendly, stable filename instead of the raw app-debug.apk.
+        if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
+        run: cp app/build/outputs/apk/debug/app-debug.apk shadey-dev.apk
+
       - name: Publish dev build
         # A single, always-overwritten pre-release so there's one stable, bookmarkable place to
         # grab the latest dev build — unlike workflow-run artifacts, this needs no GitHub login
@@ -83,7 +88,7 @@ jobs:
             Branch: `${{ github.ref_name }}`
             Commit: ${{ github.sha }}
           prerelease: true
-          files: app/build/outputs/apk/debug/*.apk
+          files: shadey-dev.apk
 
       - name: Rename APK for release
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'

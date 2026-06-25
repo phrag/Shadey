@@ -683,6 +683,23 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * Whether a tile-building harvest is worth running right now — checked by the map view
+     * BEFORE it pays for the native `queryRenderedFeatures` call, not just after. Throttling
+     * inside [onBuildingsQueried] alone still let every follow-camera re-centre (i.e. roughly
+     * every GPS fix while walking) pay for that query and then throw the result away, which was
+     * still visible as jank even once the recompute/harvest itself was gated.
+     */
+    fun shouldHarvestBuildings(c: LatLng): Boolean {
+        if (bundledRegion?.contains(c) == true) return false
+        if (downloadedCityRegion()?.contains(c) == true) return false
+        val lastHarvest = lastHarvestCenter
+        if (activeBuildings.isNotEmpty() && lastHarvest != null && distanceMeters(lastHarvest, c) < HARVEST_MIN_MOVE_M) {
+            return false
+        }
+        return true
+    }
+
+    /**
      * Building footprints harvested directly from the rendered map tiles (no network).
      * Parsed off the main thread and fed straight into the shadow engine.
      */

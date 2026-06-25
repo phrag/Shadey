@@ -681,6 +681,7 @@ private fun ShadeyMapLayer(state: ShadeyUiState, vm: ShadeyViewModel) {
         onMapLongClick = { p -> if (!state.routeActive) vm.onMapClick(p) },
         onCameraIdle = vm::onCameraIdle,
         onBuildingsQueried = vm::onBuildingsQueried,
+        shouldHarvestBuildings = vm::shouldHarvestBuildings,
         onCameraTargetConsumed = vm::onCameraTargetConsumed,
         onUserGesture = vm::disengageFollow,
         modifier = Modifier.fillMaxSize(),

@@ -71,6 +71,7 @@ fun ShadeyMap(
     onMapLongClick: (CoreLatLng) -> Unit,
     onCameraIdle: (center: CoreLatLng, bounds: ClosedBounds) -> Unit,
     onBuildingsQueried: (features: List<Feature>, belowZoom: Boolean) -> Unit,
+    shouldHarvestBuildings: (center: CoreLatLng) -> Boolean,
     onCameraTargetConsumed: () -> Unit,
     onUserGesture: () -> Unit,
     modifier: Modifier = Modifier,
@@ -85,6 +86,7 @@ fun ShadeyMap(
     val currentOnMapClick by rememberUpdatedState(onMapClick)
     val currentOnMapLongClick by rememberUpdatedState(onMapLongClick)
     val currentOnUserGesture by rememberUpdatedState(onUserGesture)
+    val currentShouldHarvestBuildings by rememberUpdatedState(shouldHarvestBuildings)
 
     DisposableEffect(lifecycleOwner, mapView) {
         val observer = LifecycleEventObserver { _, event ->
@@ -156,7 +158,10 @@ fun ShadeyMap(
                                 onBuildingsQueried(emptyList(), true)
                                 return@Runnable
                             }
-                            if (buildingLayerIds.isNotEmpty()) {
+                            val target = map.cameraPosition.target
+                            if (buildingLayerIds.isNotEmpty() && target != null &&
+                                currentShouldHarvestBuildings(CoreLatLng(target.latitude, target.longitude))
+                            ) {
                                 // Expand rect by 20% on each side so buildings near screen edges
                                 // (which can still cast shadows into the view) are included.
                                 val w = mapView.width.toFloat()

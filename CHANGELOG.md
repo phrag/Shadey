@@ -86,6 +86,12 @@ https://github.com/phrag/shadey/releases.
   onto the ground and combining them, so whether the phone is flat or upright the cone points the
   right way, smoothly, with no singularity. (Travel direction from GPS still takes over while you're
   actually walking; the sensor reading drives the cone whenever you slow or stop.)
+- Fixed the map still stuttering while walking with follow-me on, even after the above throttling.
+  The previous fix only gated what happened with a tile-building query's *result* — the costly
+  native query itself still ran on every single camera move (i.e. on every follow-camera re-centre,
+  and even while standing inside Berlin or a downloaded city, where the result was thrown away
+  immediately). The map now asks the view model first, and skips the query outright unless it could
+  actually change anything — outside a bundled/downloaded city and only after real movement.
 - Fixed the map jumping to a previously-downloaded city out of nowhere while browsing
   somewhere else entirely (e.g. mid-pan around Berlin suddenly landing in Palermo). The
   app silently restores your last-used downloaded city on launch — and Android can quietly

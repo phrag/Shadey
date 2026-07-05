@@ -3,7 +3,7 @@
 All notable changes to Shadey are documented here. Releases are published at
 https://github.com/phrag/shadey/releases.
 
-## Unreleased
+## 1.2.0
 
 **Spots**
 - Long-press anywhere on the map to drop a pin and save it as a spot — a
@@ -21,6 +21,8 @@ https://github.com/phrag/shadey/releases.
   for search & downloads" setting.
 - A small arrow in the title pill now points at the current sun direction,
   hidden after dark.
+- The system back gesture now plays Android's predictive-back animation
+  (opted in via the manifest, as required since Android 13).
 - Tap the My-location button to drop a live "you are here" marker — an upright
   ツ smiley face with a translucent cone that swings beneath it to show which
   way you're facing. While you're walking the facing direction comes from your

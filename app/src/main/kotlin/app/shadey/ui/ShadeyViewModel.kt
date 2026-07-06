@@ -9,6 +9,7 @@ import app.shadey.core.model.LatLng
 import app.shadey.core.model.Spot
 import app.shadey.core.model.SpotCategory
 import app.shadey.core.model.SpotSource
+import app.shadey.core.model.SolarPosition
 import app.shadey.core.model.Sunlight
 import app.shadey.core.rank.SpotRanker
 import app.shadey.core.rank.SpotSunInfo
@@ -16,15 +17,19 @@ import app.shadey.core.shade.ShadowEngine
 import app.shadey.core.solar.SolarCalculator
 import app.shadey.data.BoundingBox
 import app.shadey.data.BuildingDownloader
+import app.shadey.data.BuildingIndex
 import app.shadey.data.CachedCity
 import app.shadey.data.CityHit
 import app.shadey.data.CityStore
 import app.shadey.data.Geocoder
 import app.shadey.data.GeoJsonFile
+import app.shadey.data.RouteOption
+import app.shadey.data.Router
 import app.shadey.data.SavedSpotsStore
 import app.shadey.data.UpdateChecker
 import app.shadey.data.UpdateInfo
-import app.shadey.data.centroid
+import app.shadey.data.WeatherClient
+import app.shadey.data.WeatherSnapshot
 import app.shadey.map.ClosedBounds
 import app.shadey.map.GeoJsonWriter
 import kotlinx.coroutines.Dispatchers
@@ -38,12 +43,19 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
 
 data class DroppedPin(val lat: Double, val lng: Double, val info: SpotSunInfo?)
+
+/** A run of consecutive route samples sharing the same sun/shade state. */
+data class RouteSegment(val coords: List<LatLng>, val sunlight: Sunlight)
+
+/** A walking route scored by how much of it is shaded right now. */
+data class ScoredRoute(val option: RouteOption, val shadeRatio: Double, val segments: List<RouteSegment>)
 
 data class ShadeyUiState(
     val date: LocalDate = LocalDate.now(),
@@ -52,6 +64,9 @@ data class ShadeyUiState(
     val ranked: List<SpotSunInfo> = emptyList(),
     val selectedId: String? = null,
     val dropped: DroppedPin? = null,
+    /** The next upcoming sunny spell today for the dropped pin / selected spot, if it's currently
+     *  shaded or dark. Null when there isn't one (or the point is already in the sun). */
+    val sunnyWindow: ShadowEngine.SunWindow? = null,
     val shadowsGeoJson: String = GeoJsonWriter.emptyCollection(),
     val spotsGeoJson: String = GeoJsonWriter.emptyCollection(),
     val pinGeoJson: String = GeoJsonWriter.emptyCollection(),
@@ -80,8 +95,35 @@ data class ShadeyUiState(
     val updateChecksEnabled: Boolean = false,
     val lastUpdateCheck: Long = 0L,
     val checkingForUpdate: Boolean = false,
+    /** Live cloud cover/UV for the map centre, when known. Annotation only — never affects shade. */
+    val weather: WeatherSnapshot? = null,
+    // Shady route planner.
+    /** True from tapping the route FAB until the route is cancelled — taps then set origin/dest. */
+    val routeActive: Boolean = false,
+    val routeOrigin: LatLng? = null,
+    val routeDest: LatLng? = null,
+    val routeOptions: List<ScoredRoute> = emptyList(),
+    val selectedRouteIdx: Int = 0,
+    val routeBusy: Boolean = false,
+    val routeStatus: String? = null,
+    val routeGeoJson: String = GeoJsonWriter.emptyCollection(),
+    // Current sun position at the map centre — drives the compass overlay.
+    val sunAzimuthDeg: Double = 0.0,
+    val sunElevationDeg: Double = 0.0,
+    // Live "you are here" marker. Tracking turns on when the user taps My-location and stays on
+    // (live, while foregrounded) for the session. Follow recenters the camera as they move until
+    // a manual pan disengages it.
+    val userTracking: Boolean = false,
+    val userFollow: Boolean = false,
+    val userLocation: LatLng? = null,
+    /** Heading in degrees clockwise from true north, or null until the orientation sensor reports. */
+    val userHeadingDeg: Float? = null,
+    /** True when the magnetometer is uncalibrated/disturbed, so the UI prompts the figure-8 wave.
+     *  Only meaningful while tracking and when the heading is coming from the compass. */
+    val compassNeedsCalibration: Boolean = false,
 ) {
     val selected: SpotSunInfo? get() = ranked.firstOrNull { it.spot.id == selectedId }
+    val selectedRoute: ScoredRoute? get() = routeOptions.getOrNull(selectedRouteIdx)
 }
 
 class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
@@ -103,17 +145,41 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     private var curated: List<Spot> = emptyList()
     private var userSpots: List<Spot> = emptyList()
     private var activeBuildings: List<Building> = emptyList()
-    private var activeCitySlug: String? = null
     // Buildings harvested from tiles, accumulated across pans (insertion-ordered for LRU eviction).
     private val accumulated = LinkedHashMap<String, Building>()
     private var bundledBuildings: List<Building> = emptyList()
     private var bundledRegion: BoundingBox? = null
+    // The currently active downloaded city, if any — kept separate from the bundled Berlin data
+    // above so switching to a downloaded city never permanently loses the bundled dataset.
+    private var downloadedCity: CachedCity? = null
+    private var downloadedCityBuildings: List<Building> = emptyList()
+    private fun downloadedCityRegion(): BoundingBox? =
+        downloadedCity?.let { BoundingBox(it.south, it.west, it.north, it.east) }
     private var center: LatLng = initialTarget
     private var bounds: ClosedBounds? = null
+    // Centre at the last camera-idle that actually triggered a recompute. Follow-camera re-centres
+    // on every GPS fix (roughly once a second while walking), and each recompute rebuilds the shadow
+    // GeoJSON and pushes it into the native map source — expensive enough to stall the main thread
+    // for hundreds of ms. A walking-pace nudge of a metre or two can't change which buildings are in
+    // view or the spot ranking, so only re-trigger once the centre has moved meaningfully.
+    private var lastRecomputeCenter: LatLng? = null
+    // Position the camera last re-centred on while following. The map only follows once the user has
+    // moved a real distance, so a stationary phone's GPS wander doesn't slide the whole world about.
+    private var lastFollowTarget: LatLng? = null
+    // Centre at the last tile-building harvest. In tile mode the follow-camera's per-fix re-render
+    // would otherwise re-parse features and recompute shade several times a second; we already
+    // accumulate buildings across pans, so re-harvest only after moving a meaningful distance.
+    private var lastHarvestCenter: LatLng? = null
     private var recomputeJob: Job? = null
     private var buildingsJob: Job? = null
     private var frameJob: Job? = null
     private var settleJob: Job? = null
+    private var weatherJob: Job? = null
+    private var routeJob: Job? = null
+    private var sunnyWindowJob: Job? = null
+    // Keyed by ~1 km grid cell + hour, so panning within an area or scrubbing the time slider
+    // doesn't re-fetch — cloud cover barely changes at that resolution within an hour.
+    private val weatherCache = java.util.concurrent.ConcurrentHashMap<String, WeatherSnapshot>()
 
     // Precomputed "shadow movie" for the current view + date: a shadow (and spot-colour) frame
     // per FRAME_STEP-minute bucket of the day. Once built, scrubbing the time slider is a pure
@@ -155,7 +221,9 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                 val b = withContext(Dispatchers.Default) {
                     runCatching { GeoJsonFile.buildings(lastFile) }.getOrDefault(emptyList())
                 }
-                if (b.isNotEmpty()) { activateCity(lastCity, b); true } else false
+                // Restore the city's building data so shade works if the user is near it, but do
+                // NOT move the camera — a silent restore must never yank the view to another city.
+                if (b.isNotEmpty()) { activateCity(lastCity, b, moveCamera = false); true } else false
             } else false
             if (!restored) {
                 recompute(rank = true, immediate = true)
@@ -222,7 +290,16 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         recompute(rank = true)
     }
 
-    fun selectSpot(id: String?) = _state.update { it.copy(selectedId = id, dropped = null) }
+    fun selectSpot(id: String?) {
+        _state.update { it.copy(selectedId = id, dropped = null) }
+        val selected = _state.value.selected
+        if (selected == null) {
+            sunnyWindowJob?.cancel()
+            _state.update { it.copy(sunnyWindow = null) }
+        } else {
+            scheduleSunnyWindow(selected.spot.latLng, selected.sunlight)
+        }
+    }
 
     fun onMapClick(p: LatLng) {
         viewModelScope.launch {
@@ -234,12 +311,193 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                     pinGeoJson = GeoJsonWriter.point(p, GeoJsonWriter.colorFor(info.sunlight)),
                 )
             }
+            scheduleSunnyWindow(p, info.sunlight)
         }
     }
 
     fun goToPlace(hit: app.shadey.data.CityHit) = moveTo(LatLng(hit.lat, hit.lng))
 
     fun dropPinAtCenter() = onMapClick(center)
+
+    // --- Shady route planner -----------------------------------------------------------------
+
+    /** Enter route-planning mode: the next two map taps set the origin, then the destination. */
+    fun startRoutePlanning() {
+        routeJob?.cancel()
+        _state.update {
+            it.copy(
+                routeActive = true, routeOrigin = null, routeDest = null,
+                routeOptions = emptyList(), selectedRouteIdx = 0, routeBusy = false,
+                routeStatus = null, routeGeoJson = GeoJsonWriter.emptyCollection(),
+                pinGeoJson = GeoJsonWriter.emptyCollection(),
+            )
+        }
+    }
+
+    /** Leave route-planning mode and clear the route + endpoint pins off the map. */
+    fun cancelRoutePlanning() {
+        routeJob?.cancel()
+        _state.update {
+            it.copy(
+                routeActive = false, routeOrigin = null, routeDest = null,
+                routeOptions = emptyList(), selectedRouteIdx = 0, routeBusy = false,
+                routeStatus = null, routeGeoJson = GeoJsonWriter.emptyCollection(),
+                pinGeoJson = GeoJsonWriter.emptyCollection(),
+            )
+        }
+    }
+
+    /** A tap on the map while route-planning is active: first sets the origin, then the destination. */
+    fun onRouteMapTap(p: LatLng) {
+        val s = _state.value
+        if (!s.routeActive) return
+        when {
+            s.routeOrigin == null -> _state.update {
+                it.copy(
+                    routeOrigin = p, routeStatus = null,
+                    pinGeoJson = GeoJsonWriter.points(listOf(p to ROUTE_ORIGIN_COLOR)),
+                )
+            }
+            s.routeDest == null -> {
+                val origin = s.routeOrigin!! // guaranteed by the branch above having been skipped
+                _state.update {
+                    it.copy(
+                        routeDest = p,
+                        pinGeoJson = GeoJsonWriter.points(
+                            listOf(origin to ROUTE_ORIGIN_COLOR, p to ROUTE_DEST_COLOR),
+                        ),
+                    )
+                }
+                fetchRoutes()
+            }
+            // Both already set — a further tap starts a fresh pick rather than being ignored.
+            else -> _state.update {
+                it.copy(
+                    routeOrigin = p, routeDest = null, routeOptions = emptyList(), selectedRouteIdx = 0,
+                    routeStatus = null, routeGeoJson = GeoJsonWriter.emptyCollection(),
+                    pinGeoJson = GeoJsonWriter.points(listOf(p to ROUTE_ORIGIN_COLOR)),
+                )
+            }
+        }
+    }
+
+    /**
+     * Use the device's current location as the route's start point, skipping the map tap. A null
+     * [p] means the fix was unavailable (permission denied, or no recent location) — surface that
+     * rather than silently doing nothing, so the user knows to tap the map instead. Setting the
+     * origin always clears any half-finished pick so the flow restarts cleanly from "now tap your
+     * destination".
+     */
+    fun useLocationAsRouteStart(p: LatLng?) {
+        if (!_state.value.routeActive) return
+        if (p == null) {
+            _state.update { it.copy(routeStatus = "Couldn't get your location — tap the map to set a start point") }
+            return
+        }
+        _state.update {
+            it.copy(
+                routeOrigin = p, routeDest = null, routeOptions = emptyList(), selectedRouteIdx = 0,
+                routeBusy = false, routeStatus = null, routeGeoJson = GeoJsonWriter.emptyCollection(),
+                pinGeoJson = GeoJsonWriter.points(listOf(p to ROUTE_ORIGIN_COLOR)),
+            )
+        }
+    }
+
+    /** Cycle to the next walking alternative (wraps around). */
+    fun nextRouteOption() {
+        val s = _state.value
+        if (s.routeOptions.size < 2) return
+        val idx = (s.selectedRouteIdx + 1) % s.routeOptions.size
+        _state.update { it.copy(selectedRouteIdx = idx, routeGeoJson = routeGeoJsonFor(s.routeOptions[idx])) }
+    }
+
+    private fun fetchRoutes() {
+        val s = _state.value
+        val origin = s.routeOrigin ?: return
+        val dest = s.routeDest ?: return
+        if (!s.allowRoaming) {
+            _state.update { it.copy(routeStatus = "Network data is off — enable it in Settings to plan a route.") }
+            return
+        }
+        routeJob?.cancel()
+        routeJob = viewModelScope.launch {
+            _state.update { it.copy(routeBusy = true, routeStatus = null) }
+            val raw = runCatching { Router.walkingRoutes(origin, dest) }.getOrDefault(emptyList())
+            if (raw.isEmpty()) {
+                _state.update { it.copy(routeBusy = false, routeStatus = "No walking route found between those points") }
+                return@launch
+            }
+            val now = instant()
+            val frozenBuildings = activeBuildings
+            val scored = withContext(Dispatchers.Default) {
+                // Reuse the shared spatial index instead of rescanning every building on each of the
+                // hundreds of per-sample lookups, and fix the sun position once — it's effectively
+                // constant across a few-km city walk at a single instant.
+                val index = indexFor(frozenBuildings)
+                val sun = SolarCalculator.position(origin, now)
+                raw.map { scoreRoute(it, sun, index) }
+            }
+            // Shadiest first — that's the point of the feature.
+            val best = scored.indices.maxByOrNull { scored[it].shadeRatio } ?: 0
+            _state.update {
+                it.copy(
+                    routeBusy = false, routeOptions = scored, selectedRouteIdx = best,
+                    routeGeoJson = routeGeoJsonFor(scored[best]),
+                )
+            }
+        }
+    }
+
+    private fun routeGeoJsonFor(scored: ScoredRoute) =
+        GeoJsonWriter.route(scored.segments.map { it.coords to it.sunlight })
+
+    /** Samples every [ROUTE_SAMPLE_STEP_M] along the route and reuses the shadow engine to score it. */
+    private fun scoreRoute(route: RouteOption, sun: SolarPosition, index: BuildingIndex): ScoredRoute {
+        val samples = sampleAlong(route.coords, ROUTE_SAMPLE_STEP_M)
+        val segments = ArrayList<RouteSegment>()
+        var run = ArrayList<LatLng>()
+        var runState: Sunlight? = null
+        var sunCount = 0
+        for (p in samples) {
+            val state = engine.sunlightAt(p, sun, index.near(p, radiusMeters = 200.0))
+            if (state == Sunlight.SUN) sunCount++
+            if (runState != null && state != runState) {
+                run.add(p) // shared vertex so adjacent coloured segments connect with no gap
+                segments.add(RouteSegment(run, runState))
+                run = ArrayList()
+            }
+            run.add(p)
+            runState = state
+        }
+        if (run.size >= 2 && runState != null) segments.add(RouteSegment(run, runState))
+        val shadeRatio = if (samples.isEmpty()) 0.0 else 1.0 - sunCount.toDouble() / samples.size
+        return ScoredRoute(route, shadeRatio, segments)
+    }
+
+    /** Resamples a polyline at a fixed step (metres), using one local projection for the whole route. */
+    private fun sampleAlong(coords: List<LatLng>, stepMeters: Double): List<LatLng> {
+        if (coords.size < 2) return coords
+        val proj = app.shadey.core.geo.LocalProjection(coords.first())
+        val pts = coords.map(proj::toLocal)
+        val samples = ArrayList<LatLng>()
+        samples.add(coords.first())
+        var traveled = 0.0
+        var nextMark = stepMeters
+        for (i in 1 until pts.size) {
+            val a = pts[i - 1]
+            val b = pts[i]
+            val segLen = (b - a).length()
+            if (segLen <= 1e-6) continue
+            while (traveled + segLen >= nextMark) {
+                val t = (nextMark - traveled) / segLen
+                samples.add(proj.toLatLng(a + (b - a) * t))
+                nextMark += stepMeters
+            }
+            traveled += segLen
+        }
+        if (samples.last() != coords.last()) samples.add(coords.last())
+        return samples
+    }
 
     /**
      * Returns the current map viewport expanded by 50% on each side as a viewbox
@@ -262,8 +520,69 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onCameraTargetConsumed() = _state.update { it.copy(cameraTarget = null) }
 
-    fun clearDropped() =
-        _state.update { it.copy(dropped = null, pinGeoJson = GeoJsonWriter.emptyCollection()) }
+    // --- Live location marker ("you are here") -----------------------------------------------
+
+    /**
+     * Begin showing and live-tracking the user's location marker, and follow them with the camera.
+     * Called from the My-location button (after the location permission is resolved). [initial] is
+     * the last-known fix used to centre immediately; continuous updates then arrive via
+     * [onUserLocation] from the UI layer's location/sensor listeners.
+     */
+    fun startLocationFollow(initial: LatLng?) {
+        _state.update {
+            it.copy(
+                userTracking = true,
+                userFollow = true,
+                userLocation = initial ?: it.userLocation,
+                cameraTarget = initial ?: it.cameraTarget,
+            )
+        }
+        lastFollowTarget = initial
+        if (initial != null) center = initial
+    }
+
+    /** A new continuous location fix. Updates the marker and, while following, recentres the camera. */
+    fun onUserLocation(p: LatLng) {
+        if (!_state.value.userTracking) return
+        val follow = _state.value.userFollow
+        // Only re-centre the camera once the user has actually moved a meaningful distance. Chasing
+        // every ~1 Hz fix slid the whole map under a standing user as the GPS wandered a few metres
+        // each second — which read as the location "jumping around". The marker itself still updates
+        // every fix, so it stays live; the camera just stops twitching.
+        val last = lastFollowTarget
+        val moveCamera = follow && (last == null || distanceMeters(last, p) >= FOLLOW_MIN_MOVE_M)
+        if (moveCamera) lastFollowTarget = p
+        _state.update {
+            it.copy(
+                userLocation = p,
+                cameraTarget = if (moveCamera) p else it.cameraTarget,
+            )
+        }
+        if (follow) center = p
+    }
+
+    /** A new device-orientation reading (degrees clockwise from true north). */
+    fun onUserHeading(deg: Float) {
+        if (!_state.value.userTracking) return
+        _state.update { it.copy(userHeadingDeg = deg) }
+    }
+
+    /** A manual map gesture stops the camera following the user; the marker keeps tracking. */
+    fun disengageFollow() {
+        if (_state.value.userFollow) _state.update { it.copy(userFollow = false) }
+    }
+
+    /** The orientation sensor's read on whether the compass is trustworthy right now. */
+    fun onCompassCalibration(needed: Boolean) {
+        if (_state.value.compassNeedsCalibration != needed) {
+            _state.update { it.copy(compassNeedsCalibration = needed) }
+        }
+    }
+
+    fun clearDropped() {
+        sunnyWindowJob?.cancel()
+        _state.update { it.copy(dropped = null, sunnyWindow = null, pinGeoJson = GeoJsonWriter.emptyCollection()) }
+    }
 
     fun saveDropped(name: String) {
         val d = _state.value.dropped ?: return
@@ -289,14 +608,87 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     fun onCameraIdle(newCenter: LatLng, newBounds: ClosedBounds) {
         center = newCenter
         bounds = newBounds
-        // Swap back to bundled data when returning from outside the bundled region.
-        if (bundledRegion?.contains(newCenter) == true && activeBuildings !== bundledBuildings) {
-            activeBuildings = bundledBuildings
-            _state.update { it.copy(sourceLabel = "Berlin · ${bundledBuildings.size} buildings") }
+        val city = downloadedCity
+        if (bundledRegion?.contains(newCenter) == true) {
+            // Swap back to bundled data when returning from outside the bundled region.
+            if (activeBuildings !== bundledBuildings) {
+                activeBuildings = bundledBuildings
+                forgetActiveCity()
+                _state.update { it.copy(sourceLabel = "Berlin · ${bundledBuildings.size} buildings") }
+            }
+        } else if (city != null && downloadedCityRegion()?.contains(newCenter) == true) {
+            // Swap back to the active downloaded city's data when returning to it.
+            if (activeBuildings !== downloadedCityBuildings) {
+                activeBuildings = downloadedCityBuildings
+                _state.update { it.copy(sourceLabel = "${city.name} · ${downloadedCityBuildings.size} buildings") }
+            }
+        } else if (activeBuildings.isNotEmpty()) {
+            // The held buildings (bundled/downloaded-city data, or an earlier tile harvest) no
+            // longer cover where we're looking — e.g. just left that region, or panned far since
+            // the last successful tile query. Drop them instead of leaving a stale building count
+            // (and stale shadows) up while tile harvesting catches up to the new view; otherwise
+            // the title pill can claim thousands of buildings are loaded while the map shows none
+            // of them and renders no shade at all.
+            val coverage = BoundingBox.ofBuildings(activeBuildings)?.expandedMeters(STALE_DATA_MARGIN_M)
+            if (coverage?.contains(newCenter) != true) {
+                activeBuildings = emptyList()
+                accumulated.clear()
+                lastHarvestCenter = null
+                forgetActiveCity()
+                _state.update { it.copy(sourceLabel = "Loading buildings…") }
+            }
         }
-        // Force a re-rank: the spot order now depends on distance from the map centre,
-        // not just the sun's position, so a moved centre must always refresh it.
-        recompute(rank = true)
+        // Force a re-rank: the spot order now depends on distance from the map centre, not just
+        // the sun's position, so a moved centre must always refresh it — but skip the (expensive)
+        // recompute entirely for sub-threshold moves, e.g. follow-camera nudging the view by a
+        // metre or two on every GPS fix while walking. Nothing visible can change at that scale.
+        val last = lastRecomputeCenter
+        if (last == null || distanceMeters(last, newCenter) >= RECOMPUTE_MIN_MOVE_M) {
+            lastRecomputeCenter = newCenter
+            recompute(rank = true)
+            fetchWeather(newCenter)
+        }
+    }
+
+    /** Fetch (or reuse a cached) cloud cover/UV reading for [p]. Annotation only — never gates shade. */
+    private fun fetchWeather(p: LatLng) {
+        if (!_state.value.allowRoaming) return
+        val key = weatherKey(p)
+        weatherCache[key]?.let { cached ->
+            _state.update { it.copy(weather = cached) }
+            return
+        }
+        weatherJob?.cancel()
+        weatherJob = viewModelScope.launch {
+            delay(500) // debounce rapid panning
+            val snapshot = WeatherClient.current(p.lat, p.lng) ?: return@launch
+            weatherCache[key] = snapshot
+            _state.update { it.copy(weather = snapshot) }
+        }
+    }
+
+    private fun weatherKey(p: LatLng): String {
+        val gridLat = Math.round(p.lat * 100) // ~1.1 km cells
+        val gridLng = Math.round(p.lng * 100)
+        val hour = java.time.LocalDateTime.now().hour
+        return "${gridLat}_${gridLng}_$hour"
+    }
+
+    /**
+     * Whether a tile-building harvest is worth running right now — checked by the map view
+     * BEFORE it pays for the native `queryRenderedFeatures` call, not just after. Throttling
+     * inside [onBuildingsQueried] alone still let every follow-camera re-centre (i.e. roughly
+     * every GPS fix while walking) pay for that query and then throw the result away, which was
+     * still visible as jank even once the recompute/harvest itself was gated.
+     */
+    fun shouldHarvestBuildings(c: LatLng): Boolean {
+        if (bundledRegion?.contains(c) == true) return false
+        if (downloadedCityRegion()?.contains(c) == true) return false
+        val lastHarvest = lastHarvestCenter
+        if (activeBuildings.isNotEmpty() && lastHarvest != null && distanceMeters(lastHarvest, c) < HARVEST_MIN_MOVE_M) {
+            return false
+        }
+        return true
     }
 
     /**
@@ -304,13 +696,24 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
      * Parsed off the main thread and fed straight into the shadow engine.
      */
     fun onBuildingsQueried(features: List<org.maplibre.geojson.Feature>, belowZoom: Boolean) {
-        // Bundled data is more complete than tile queries — skip when inside the bundled region.
+        // Bundled/downloaded-city data is more complete than tile queries — skip both regions.
         if (bundledRegion?.contains(center) == true) return
+        if (downloadedCityRegion()?.contains(center) == true) return
+        // Throttle the tile-harvest path. The follow-camera re-renders the map on every GPS fix,
+        // and each render fires this query; without a gate it re-parses features and recomputes
+        // shade several times a second (the frame-skip + heavy-GC storm seen in device logs).
+        // Buildings accumulate across pans, so nothing new appears until we've actually moved.
+        if (!belowZoom && activeBuildings.isNotEmpty()) {
+            val lastHarvest = lastHarvestCenter
+            if (lastHarvest != null && distanceMeters(lastHarvest, center) < HARVEST_MIN_MOVE_M) return
+        }
+        val harvestCenter = center
         buildingsJob?.cancel()
         buildingsJob = viewModelScope.launch {
             if (belowZoom) {
                 accumulated.clear()
                 activeBuildings = emptyList()
+                lastHarvestCenter = null
                 _state.update { it.copy(sourceLabel = "Zoom in to see shade") }
                 recompute()
                 return@launch
@@ -330,6 +733,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                 accumulated.remove(oldest)
             }
             activeBuildings = accumulated.values.toList()
+            lastHarvestCenter = harvestCenter
             _state.update { it.copy(sourceLabel = "OpenStreetMap · ${activeBuildings.size} buildings") }
             recompute()
         }
@@ -486,24 +890,42 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Make a downloaded city the active region: its data drives shadows and the map jumps to it. */
-    private fun activateCity(city: CachedCity, buildings: List<Building>) {
-        bundledBuildings = buildings
-        bundledRegion = BoundingBox(city.south, city.west, city.north, city.east)
+    /**
+     * Make a downloaded city the active region: its data drives shadows and, when [moveCamera] is
+     * set, the map jumps to it. An explicit city switch (search → download, or picking a cached
+     * city) does want the camera to follow; the silent restore on launch does NOT — otherwise an
+     * Activity/process recreation (e.g. Android reclaiming the backgrounded app's memory, then the
+     * user returning) re-runs init and teleports the camera to whatever city was last used, which
+     * reads as the map randomly jumping mid-session. So the restore keeps the data but leaves the
+     * camera wherever it already is.
+     */
+    private fun activateCity(city: CachedCity, buildings: List<Building>, moveCamera: Boolean = true) {
+        downloadedCity = city
+        downloadedCityBuildings = buildings
         activeBuildings = buildings
-        activeCitySlug = city.slug
         accumulated.clear()
         shadowCache.clear()
         shadowCacheSunKey = null
         framesViewKey = null
-        center = LatLng(city.lat, city.lng)
+        if (moveCamera) center = LatLng(city.lat, city.lng)
         _state.update {
             it.copy(
                 sourceLabel = "${city.name} · ${buildings.size} buildings",
-                cameraTarget = center,
+                cameraTarget = if (moveCamera) LatLng(city.lat, city.lng) else it.cameraTarget,
             )
         }
         recompute(rank = true, immediate = true)
+    }
+
+    /** Stop treating a downloaded city as "what to restore on next launch" once the map has
+     *  panned away from it — otherwise a cold start (including one forced by the OS killing the
+     *  backgrounded app) silently jumps the camera back to a city the user isn't even looking at
+     *  anymore, instead of resuming wherever they actually left off. */
+    private fun forgetActiveCity() {
+        if (downloadedCity == null) return
+        downloadedCity = null
+        downloadedCityBuildings = emptyList()
+        viewModelScope.launch(Dispatchers.IO) { cityStore.clearLastUsed() }
     }
 
     private fun evaluatePoint(p: LatLng): SpotSunInfo {
@@ -514,17 +936,50 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         return SpotSunInfo(tmp, engine.sunlightAt(p, sun, near), sun, engine.nextTransition(p, near, now)?.at)
     }
 
-    private fun buildingsNear(p: LatLng, buildings: List<Building> = activeBuildings, radiusMeters: Double = 800.0): List<Building> {
-        val box = BoundingBox.around(p, radiusMeters)
-        return buildings.filter { box.contains(it.centroid()) }
+    /** Looks ahead for the next sunny spell today at [p], unless it's already sunny. */
+    private fun scheduleSunnyWindow(p: LatLng, sunlight: Sunlight) {
+        sunnyWindowJob?.cancel()
+        _state.update { it.copy(sunnyWindow = null) }
+        if (sunlight == Sunlight.SUN) return
+        sunnyWindowJob = viewModelScope.launch {
+            val now = instant()
+            val near = buildingsNear(p)
+            val window = withContext(Dispatchers.Default) {
+                val endOfDay = now.atZone(zone).toLocalDate().plusDays(1).atStartOfDay(zone).toInstant()
+                val within = Duration.between(now, endOfDay)
+                if (within.isZero || within.isNegative) null
+                else engine.nextSunWindow(p, near, now, within)
+            }
+            _state.update { it.copy(sunnyWindow = window) }
+        }
     }
+
+    // One spatial index per loaded building set, reused across route scoring, spot ranking, and
+    // shadow gathering. Rebuilt only when activeBuildings is swapped (a new city / fresh download),
+    // keyed by reference identity. @Synchronized because these lookups run on background dispatchers
+    // and several coroutines may otherwise race to build the index on the first call after a swap.
+    private var spatialIndex: BuildingIndex? = null
+    private var spatialIndexFor: List<Building>? = null
+
+    @Synchronized
+    private fun indexFor(buildings: List<Building>): BuildingIndex {
+        val cached = spatialIndex
+        if (cached != null && spatialIndexFor === buildings) return cached
+        return BuildingIndex(buildings).also {
+            spatialIndex = it
+            spatialIndexFor = buildings
+        }
+    }
+
+    private fun buildingsNear(p: LatLng, buildings: List<Building> = activeBuildings, radiusMeters: Double = 800.0): List<Building> =
+        indexFor(buildings).near(p, radiusMeters)
 
     private fun buildingsInView(c: LatLng = center, buildings: List<Building> = activeBuildings): List<Building> {
         val b = bounds ?: return buildingsNear(c, buildings)
         // Expand the view bbox so buildings just outside screen can still cast shadows into view.
         // At a 10° sun elevation a 30m building casts a ~170m shadow; use 500m to cover low angles.
         val box = BoundingBox(b.south, b.west, b.north, b.east).expandedMeters(500.0)
-        return buildings.filter { box.contains(it.centroid()) }
+        return indexFor(buildings).inBox(box.south, box.west, box.north, box.east)
     }
 
     /**
@@ -551,8 +1006,8 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
             // must see a stable centre, and activeBuildings can change on the main thread.
             val frozenCenter = center
             val frozenBuildings = activeBuildings
+            val sun = SolarCalculator.position(frozenCenter, now)
             val result = withContext(Dispatchers.Default) {
-                val sun = SolarCalculator.position(frozenCenter, now)
                 // Sun bucket — shadows are visually identical within ~0.5°. Cache per bucket.
                 val sunKey = "${(sun.azimuthDeg * 2).toInt()}_${(sun.elevationDeg * 2).toInt()}"
                 if (sunKey != shadowCacheSunKey || shadowCache.size > MAX_CACHE_ENTRIES) {
@@ -586,6 +1041,8 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                     shadowsGeoJson = GeoJsonWriter.shadows(rings),
                     ranked = ranked ?: it.ranked,
                     spotsGeoJson = if (ranked != null) GeoJsonWriter.spots(ranked) else it.spotsGeoJson,
+                    sunAzimuthDeg = sun.azimuthDeg,
+                    sunElevationDeg = sun.elevationDeg,
                 )
             }
             // Build the day's frames for this view in the background so scrubbing is instant.
@@ -594,10 +1051,12 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Buildings to cast shadows for in the live view: those in view, closest first, capped. */
-    private fun inViewBuildings(c: LatLng, buildings: List<Building>): List<Building> =
-        buildingsInView(c, buildings)
-            .sortedBy { distanceSq(c, it.centroid()) }
+    private fun inViewBuildings(c: LatLng, buildings: List<Building>): List<Building> {
+        val idx = indexFor(buildings)
+        return buildingsInView(c, buildings)
+            .sortedBy { distanceSq(c, idx.centroidOf(it)) }
             .take(MAX_SHADOWS)
+    }
 
     private fun bucketOf(minutes: Int): Int = (minutes / FRAME_STEP_MIN) * FRAME_STEP_MIN
 
@@ -691,6 +1150,14 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         return dLat * dLat + dLng * dLng
     }
 
+    /** Rough metric distance between two coordinates (equirectangular approx — fine at this scale). */
+    private fun distanceMeters(a: LatLng, b: LatLng): Double {
+        val meanLat = Math.toRadians((a.lat + b.lat) / 2.0)
+        val dLat = Math.toRadians(b.lat - a.lat)
+        val dLng = Math.toRadians(b.lng - a.lng) * Math.cos(meanLat)
+        return Math.sqrt(dLat * dLat + dLng * dLng) * 6_371_000.0
+    }
+
     private companion object {
         // Closest N buildings only — distant ones cast negligible shadows and dominate CPU time.
         const val MAX_SHADOWS = 600
@@ -698,8 +1165,26 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         const val MIN_BUNDLED_BUILDINGS = 1000
         const val MAX_CACHE_ENTRIES = 6000
         const val MAX_ACCUMULATED = 8000
+        // How far the map centre can drift from the held buildings' bounding box before that
+        // data is considered stale for the current view (see onCameraIdle).
+        const val STALE_DATA_MARGIN_M = 3_000.0
+        // Minimum centre movement (metres) between camera-idle events before a full recompute
+        // runs again — throttles follow-camera, which re-centres on every ~1s GPS fix while
+        // walking, from rebuilding the shadow GeoJSON and pushing it into the map far more often
+        // than anything visible could actually change.
+        const val RECOMPUTE_MIN_MOVE_M = 15.0
+        // Minimum user movement (metres) before the follow-camera re-centres. Below this the map
+        // holds still so a stationary phone's GPS jitter doesn't slide the whole view around.
+        const val FOLLOW_MIN_MOVE_M = 8.0
+        // Minimum movement (metres) before the tile-building harvest re-runs (see onBuildingsQueried).
+        const val HARVEST_MIN_MOVE_M = 25.0
         // Background update checks run at most once per day.
         const val UPDATE_CHECK_INTERVAL_MS = 24L * 60 * 60 * 1000
+        // Route shade-scoring sample spacing — fine enough to catch individual buildings'
+        // shadows without sampling so densely that scoring a multi-km walk gets slow.
+        const val ROUTE_SAMPLE_STEP_M = 25.0
+        const val ROUTE_ORIGIN_COLOR = "#2ECC71"
+        const val ROUTE_DEST_COLOR = "#E74C3C"
         // 15-minute buckets → 96 frames per day instead of 144. Combined with the 2-second
         // settle delay in precomputeFrames(), this cuts per-run garbage and the sustained GC
         // pressure from rapid panning is eliminated entirely.

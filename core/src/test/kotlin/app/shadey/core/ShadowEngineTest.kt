@@ -85,4 +85,31 @@ class ShadowEngineTest {
         assertEquals(Sunlight.SUN, t!!.to)
         assertTrue(t.at.isAfter(before))
     }
+
+    @Test
+    fun `finds the next sunny window with no buildings`() {
+        val nightBeforeSunrise = Instant.parse("2024-06-21T01:00:00Z") // night in Berlin
+        val window = engine.nextSunWindow(point, emptyList(), nightBeforeSunrise, within = Duration.ofHours(24))
+        assertNotNull(window)
+        assertTrue(window!!.start.isAfter(nightBeforeSunrise))
+        assertNotNull(window.end)
+        assertTrue(window.end!!.isAfter(window.start))
+    }
+
+    @Test
+    fun `no sunny window found when the scan deadline is too tight`() {
+        val nightBeforeSunrise = Instant.parse("2024-06-21T01:00:00Z") // night in Berlin
+        val window = engine.nextSunWindow(point, emptyList(), nightBeforeSunrise, within = Duration.ofMinutes(5))
+        assertEquals(null, window)
+    }
+
+    @Test
+    fun `sunny window has no end when the scan deadline cuts it off`() {
+        val nightBeforeSunrise = Instant.parse("2024-06-21T01:00:00Z") // night in Berlin
+        // The window starts (sunrise) well within 16h, but Berlin's June daylight outlasts the
+        // remainder of that window, so the end (sunset) falls beyond the deadline.
+        val window = engine.nextSunWindow(point, emptyList(), nightBeforeSunrise, within = Duration.ofHours(16))
+        assertNotNull(window)
+        assertEquals(null, window!!.end)
+    }
 }

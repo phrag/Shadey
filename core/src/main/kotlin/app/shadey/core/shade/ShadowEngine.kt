@@ -131,6 +131,37 @@ class ShadowEngine(
         return null
     }
 
+    /** A contiguous span of direct sunlight: [end] is null if it doesn't end within the scan window. */
+    data class SunWindow(val start: Instant, val end: Instant?)
+
+    /**
+     * The next upcoming span of direct sunlight after [from], found by chaining [nextTransition]
+     * calls forward. Returns null if [point] doesn't see sun again within [within] of [from].
+     * If [point] is already sunlit at [from], this looks for the *next* window after the current
+     * one ends, not the current one — callers already know about the current state.
+     */
+    fun nextSunWindow(
+        point: LatLng,
+        buildings: List<Building>,
+        from: Instant,
+        within: Duration = Duration.ofHours(16),
+    ): SunWindow? {
+        val deadline = from.plus(within)
+        var t = from
+        while (true) {
+            val remaining = Duration.between(t, deadline)
+            if (remaining.isZero || remaining.isNegative) return null
+            val transition = nextTransition(point, buildings, t, remaining) ?: return null
+            if (transition.to == Sunlight.SUN) {
+                val remainingAfterStart = Duration.between(transition.at, deadline)
+                val end = if (remainingAfterStart.isZero || remainingAfterStart.isNegative) null
+                    else nextTransition(point, buildings, transition.at, remainingAfterStart)?.at
+                return SunWindow(transition.at, end)
+            }
+            t = transition.at
+        }
+    }
+
     // Blocked check using pre-projected rings — avoids re-projecting footprints on every call.
     private fun isBlockedRings(point: LatLng, sun: SolarPosition, rings: List<Pair<Building, List<Vec2>>>): Boolean {
         if (sun.elevationDeg <= 0.0) return true

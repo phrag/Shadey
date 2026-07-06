@@ -6,6 +6,7 @@ import android.location.LocationManager
 import android.content.Context
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -29,6 +30,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
@@ -63,6 +65,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
@@ -73,9 +77,11 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import app.shadey.core.model.Sunlight
 import app.shadey.core.model.SpotSource
 import app.shadey.core.rank.SpotSunInfo
+import app.shadey.core.shade.ShadowEngine
 import app.shadey.data.CityHit
 import app.shadey.data.Geocoder
 import app.shadey.data.UpdateInfo
+import app.shadey.data.WeatherSnapshot
 import kotlinx.coroutines.delay
 import java.time.Instant
 import java.time.ZoneId
@@ -115,17 +121,46 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
         }
     }
 
-    fun getAndMoveToLocation() {
+    fun resolveLocation(): app.shadey.core.model.LatLng? {
         val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
         @Suppress("MissingPermission")
         val loc = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
             ?: lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-        if (loc != null) vm.moveTo(app.shadey.core.model.LatLng(loc.latitude, loc.longitude))
+        return loc?.let { app.shadey.core.model.LatLng(it.latitude, it.longitude) }
+    }
+
+    // What to do with a location fix once permission resolves — lets one permission launcher serve
+    // both the "centre on me" button and the route planner's "use my location" start.
+    var pendingLocationAction by remember {
+        mutableStateOf<((app.shadey.core.model.LatLng?) -> Unit)?>(null)
     }
 
     val locationPermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { granted -> if (granted) getAndMoveToLocation() }
+    ) { granted ->
+        val action = pendingLocationAction ?: { p -> p?.let { vm.moveTo(it) } }
+        pendingLocationAction = null
+        action(if (granted) resolveLocation() else null)
+    }
+
+    fun runWithLocation(action: (app.shadey.core.model.LatLng?) -> Unit) {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)
+            == PackageManager.PERMISSION_GRANTED
+        ) {
+            action(resolveLocation())
+        } else {
+            pendingLocationAction = action
+            locationPermLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+    }
+
+    // Continuous location + heading listeners, live only once the user has enabled tracking.
+    LocationHeadingTracker(
+        enabled = state.userTracking,
+        onLocation = vm::onUserLocation,
+        onHeading = vm::onUserHeading,
+        onCalibrationNeeded = vm::onCompassCalibration,
+    )
 
     Box(Modifier.fillMaxSize()) {
         ShadeyMapLayer(state, vm)
@@ -256,6 +291,17 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                         )
+                        state.weather?.let { w ->
+                            Text(
+                                weatherLabel(w),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                            )
+                        }
+                    }
+                    if (state.sunElevationDeg > 0.0) {
+                        Spacer(Modifier.width(8.dp))
+                        SunCompass(state.sunAzimuthDeg, Modifier.size(18.dp))
                     }
                     if (state.busy) {
                         Spacer(Modifier.width(8.dp))
@@ -277,7 +323,7 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
                     tonalElevation = 3.dp, shadowElevation = 3.dp,
                 ) {
                     IconButton(onClick = { searchActive = true }) {
-                        Icon(Icons.Filled.Search, "Search")
+                        Icon(Icons.Filled.Search, "Search", tint = MaterialTheme.colorScheme.onSurface)
                     }
                 }
             }
@@ -287,7 +333,7 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
                 tonalElevation = 3.dp, shadowElevation = 3.dp,
             ) {
                 IconButton(onClick = { showSettings = true }) {
-                    Icon(Icons.Filled.Settings, "Settings")
+                    Icon(Icons.Filled.Settings, "Settings", tint = MaterialTheme.colorScheme.onSurface)
                 }
             }
             Surface(
@@ -296,21 +342,30 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
                 tonalElevation = 3.dp, shadowElevation = 3.dp,
             ) {
                 IconButton(onClick = { showCities = true }) {
-                    Icon(Icons.Filled.Public, "Cities")
+                    Icon(Icons.Filled.Public, "Cities", tint = MaterialTheme.colorScheme.onSurface)
+                }
+            }
+            Surface(
+                shape = CircleShape,
+                color = if (state.routeActive) MaterialTheme.colorScheme.primaryContainer
+                        else MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+                tonalElevation = 3.dp, shadowElevation = 3.dp,
+            ) {
+                IconButton(onClick = { if (state.routeActive) vm.cancelRoutePlanning() else vm.startRoutePlanning() }) {
+                    Icon(
+                        if (state.routeActive) Icons.Filled.Close else Icons.Filled.DirectionsWalk,
+                        "Shadiest route",
+                        tint = if (state.routeActive) MaterialTheme.colorScheme.onPrimaryContainer
+                               else MaterialTheme.colorScheme.onSurface,
+                    )
                 }
             }
             FloatingActionButton(
-                onClick = {
-                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)
-                        == PackageManager.PERMISSION_GRANTED
-                    ) {
-                        getAndMoveToLocation()
-                    } else {
-                        locationPermLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
-                    }
-                },
-                containerColor = MaterialTheme.colorScheme.surface,
-                contentColor = MaterialTheme.colorScheme.primary,
+                onClick = { runWithLocation { p -> vm.startLocationFollow(p) } },
+                containerColor = if (state.userFollow) MaterialTheme.colorScheme.primaryContainer
+                                 else MaterialTheme.colorScheme.surface,
+                contentColor = if (state.userFollow) MaterialTheme.colorScheme.onPrimaryContainer
+                               else MaterialTheme.colorScheme.primary,
             ) {
                 Icon(Icons.Filled.MyLocation, "My location")
             }
@@ -332,6 +387,11 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
                     .padding(top = 14.dp, bottom = 8.dp)
                     .navigationBarsPadding()
             ) {
+                // Compass calibration hint — a disturbed/uncalibrated magnetometer is the usual
+                // cause of a grossly-wrong facing direction. Only while live-tracking.
+                if (state.userTracking && state.compassNeedsCalibration) {
+                    CompassCalibrationBanner()
+                }
                 // New-version banner (opt-in update checks only)
                 state.updateAvailable?.let { info ->
                     UpdateBanner(
@@ -340,13 +400,22 @@ fun MapScreen(vm: ShadeyViewModel = viewModel()) {
                         onDismiss = vm::dismissUpdate,
                     )
                 }
+                // Shady route planner (shown while active — picking points or showing a result)
+                if (state.routeActive) {
+                    RouteCard(
+                        state,
+                        onNext = vm::nextRouteOption,
+                        onCancel = vm::cancelRoutePlanning,
+                        onUseMyLocation = { runWithLocation { vm.useLocationAsRouteStart(it) } },
+                    )
+                }
                 // Dropped pin / selected spot card (shown when relevant)
                 state.dropped?.let { pin ->
-                    DroppedCard(pin, zone, onSave = vm::saveDropped, onDismiss = vm::clearDropped)
+                    DroppedCard(pin, state.sunnyWindow, zone, onSave = vm::saveDropped, onDismiss = vm::clearDropped)
                 }
                 state.selected?.let { info ->
                     SelectedCard(
-                        info, zone,
+                        info, state.sunnyWindow, zone,
                         onRemove = { vm.removeSpot(info.spot.id); vm.selectSpot(null) },
                         onDismiss = { vm.selectSpot(null) },
                     )
@@ -603,11 +672,19 @@ private fun ShadeyMapLayer(state: ShadeyUiState, vm: ShadeyViewModel) {
         shadowsGeoJson = state.shadowsGeoJson,
         spotsGeoJson = state.spotsGeoJson,
         pinGeoJson = state.pinGeoJson,
+        routeGeoJson = state.routeGeoJson,
+        userLocation = state.userLocation,
+        userHeading = state.userHeadingDeg,
         cameraTarget = state.cameraTarget,
-        onMapClick = {}, // map taps no longer drop pins
+        // While route-planning is active, taps set the origin/destination and long-press is
+        // suspended (so you can't accidentally drop a spot pin while picking route points).
+        onMapClick = { p -> if (state.routeActive) vm.onRouteMapTap(p) },
+        onMapLongClick = { p -> if (!state.routeActive) vm.onMapClick(p) },
         onCameraIdle = vm::onCameraIdle,
         onBuildingsQueried = vm::onBuildingsQueried,
+        shouldHarvestBuildings = vm::shouldHarvestBuildings,
         onCameraTargetConsumed = vm::onCameraTargetConsumed,
+        onUserGesture = vm::disengageFollow,
         modifier = Modifier.fillMaxSize(),
     )
 }
@@ -639,7 +716,13 @@ private fun SpotRow(info: SpotSunInfo, zone: ZoneId, selected: Boolean, onClick:
 }
 
 @Composable
-private fun DroppedCard(pin: DroppedPin, zone: ZoneId, onSave: (String) -> Unit, onDismiss: () -> Unit) {
+private fun DroppedCard(
+    pin: DroppedPin,
+    sunnyWindow: ShadowEngine.SunWindow?,
+    zone: ZoneId,
+    onSave: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
     var name by remember(pin) { mutableStateOf("") }
     Card(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
         Column(Modifier.padding(12.dp)) {
@@ -654,6 +737,10 @@ private fun DroppedCard(pin: DroppedPin, zone: ZoneId, onSave: (String) -> Unit,
                 Text(statusLine(info, zone), style = MaterialTheme.typography.bodyMedium)
                 Text(sunDetail(info), style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                sunnyWindow?.let { w ->
+                    Text(sunnyWindowLabel(w, zone), style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                }
             }
             Spacer(Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -675,7 +762,13 @@ private fun DroppedCard(pin: DroppedPin, zone: ZoneId, onSave: (String) -> Unit,
 }
 
 @Composable
-private fun SelectedCard(info: SpotSunInfo, zone: ZoneId, onRemove: () -> Unit, onDismiss: () -> Unit) {
+private fun SelectedCard(
+    info: SpotSunInfo,
+    sunnyWindow: ShadowEngine.SunWindow?,
+    zone: ZoneId,
+    onRemove: () -> Unit,
+    onDismiss: () -> Unit,
+) {
     Card(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
         Column(Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -693,8 +786,71 @@ private fun SelectedCard(info: SpotSunInfo, zone: ZoneId, onRemove: () -> Unit, 
             }
             Text(sunDetail(info), style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+            sunnyWindow?.let { w ->
+                Text(sunnyWindowLabel(w, zone), style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+            }
             if (info.spot.source == SpotSource.USER) {
                 TextButton(onClick = onRemove) { Text("Remove spot") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RouteCard(
+    state: ShadeyUiState,
+    onNext: () -> Unit,
+    onCancel: () -> Unit,
+    onUseMyLocation: () -> Unit,
+) {
+    Card(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
+        Column(Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Filled.DirectionsWalk, null, Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("Shadiest route", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.weight(1f))
+                IconButton(onClick = onCancel) { Icon(Icons.Filled.Close, "Cancel route") }
+            }
+            val route = state.selectedRoute
+            when {
+                state.routeBusy -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Finding the shadiest path…", style = MaterialTheme.typography.bodyMedium)
+                }
+                state.routeStatus != null -> Text(
+                    state.routeStatus,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                route != null -> {
+                    val km = "%.1f".format(route.option.distanceMeters / 1000)
+                    val mins = (route.option.durationSeconds / 60).roundToInt()
+                    Text(
+                        "${(route.shadeRatio * 100).roundToInt()}% shade · $km km · $mins min",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    if (state.routeOptions.size > 1) {
+                        TextButton(onClick = onNext, modifier = Modifier.padding(top = 4.dp)) {
+                            Text("Try another route")
+                        }
+                    }
+                }
+                state.routeOrigin == null -> Column {
+                    Text("Tap the map to set your start point", style = MaterialTheme.typography.bodyMedium)
+                    TextButton(onClick = onUseMyLocation, modifier = Modifier.padding(top = 4.dp)) {
+                        Icon(Icons.Filled.MyLocation, null, Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Use my location")
+                    }
+                }
+                else ->
+                    Text("Now tap your destination", style = MaterialTheme.typography.bodyMedium)
             }
         }
     }
@@ -805,6 +961,42 @@ private fun SettingsDialog(
 }
 
 @Composable
+private fun CompassCalibrationBanner() {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 10.dp)
+            .clip(RoundedCornerShape(12.dp)),
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+        tonalElevation = 2.dp,
+    ) {
+        Row(
+            Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Filled.Refresh, null, Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.onTertiaryContainer,
+            )
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Compass needs calibrating",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                )
+                Text(
+                    "Wave the phone in a figure-8 a few times to fix the facing direction.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.75f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun UpdateBanner(info: UpdateInfo, onOpen: () -> Unit, onDismiss: () -> Unit) {
     Surface(
         modifier = Modifier
@@ -882,6 +1074,25 @@ private fun Dot(sunlight: Sunlight?) {
     )
 }
 
+@Composable
+private fun SunCompass(azimuthDeg: Double, modifier: Modifier = Modifier) {
+    val color = MaterialTheme.colorScheme.primary
+    Canvas(modifier) {
+        rotate(azimuthDeg.toFloat()) {
+            val w = size.width
+            val h = size.height
+            val path = Path().apply {
+                moveTo(w / 2f, 0f)
+                lineTo(w * 0.78f, h * 0.62f)
+                lineTo(w / 2f, h * 0.42f)
+                lineTo(w * 0.22f, h * 0.62f)
+                close()
+            }
+            drawPath(path, color)
+        }
+    }
+}
+
 private fun sunlightColor(s: Sunlight): Color = when (s) {
     Sunlight.SUN -> Color(0xFFF5A623)
     Sunlight.SHADE -> Color(0xFF5B6B7B)
@@ -889,6 +1100,17 @@ private fun sunlightColor(s: Sunlight): Color = when (s) {
 }
 
 private fun formatTime(minutes: Int): String = "%02d:%02d".format(minutes / 60, minutes % 60)
+
+private fun weatherLabel(w: WeatherSnapshot): String {
+    val clearPct = 100 - w.cloudCoverPct
+    val emoji = when {
+        w.cloudCoverPct < 20 -> "☀"
+        w.cloudCoverPct < 60 -> "⛅"
+        else -> "☁"
+    }
+    val uv = if (w.uvIndex >= 3) " · UV ${w.uvIndex.toInt()}" else ""
+    return "$emoji $clearPct% clear$uv"
+}
 
 private fun formatRelative(epochMs: Long): String {
     val mins = (System.currentTimeMillis() - epochMs) / 60_000
@@ -903,6 +1125,14 @@ private fun formatRelative(epochMs: Long): String {
 private fun formatInstant(instant: Instant, zone: ZoneId): String {
     val t = instant.atZone(zone).toLocalTime()
     return "%02d:%02d".format(t.hour, t.minute)
+}
+
+private fun sunnyWindowLabel(window: ShadowEngine.SunWindow, zone: ZoneId): String {
+    val start = formatInstant(window.start, zone)
+    // Capture end in a local — it's a :core property, so Kotlin won't smart-cast it across modules.
+    val end = window.end
+    return if (end != null) "Sunny $start–${formatInstant(end, zone)} today"
+    else "Sunny from $start today"
 }
 
 private fun statusLine(info: SpotSunInfo, zone: ZoneId): String = when (info.sunlight) {

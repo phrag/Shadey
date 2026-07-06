@@ -406,6 +406,16 @@ class CityStore(private val filesDir: File) {
         indexFile.writeText(obj.put("last", slug).toString())
     }
 
+    /** Forget which downloaded city to restore on next launch — call once the map has panned
+     *  away from it, so a cold start (including one forced by the OS killing the backgrounded
+     *  app) resumes wherever the user actually left off instead of jumping back to a city they
+     *  no longer have open. */
+    fun clearLastUsed() {
+        val text = runCatching { indexFile.readText() }.getOrNull() ?: return
+        val obj = runCatching { JSONObject(text) }.getOrNull() ?: return
+        indexFile.writeText(obj.put("last", "").toString())
+    }
+
     companion object {
         fun slugOf(name: String): String =
             name.lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-').take(40).ifBlank { "city" }

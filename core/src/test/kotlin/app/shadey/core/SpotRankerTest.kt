@@ -82,4 +82,15 @@ class SpotRankerTest {
         assertEquals(Sunlight.SHADE, ranked.first().sunlight)
         assertEquals(Sunlight.SUN, ranked.last().sunlight)
     }
+
+    @Test
+    fun `a spot in another city entirely is dropped, not just ranked last`() {
+        // Origin in Berlin; one spot is across town (still relevant), the other is a curated
+        // spot in Palermo, ~1700 km away — it shouldn't appear in the list at all.
+        val origin = LatLng(52.51, 13.46)
+        val acrossTown = Spot("across-town", "Lake Across Town", 52.40, 13.20)
+        val otherCity = Spot("other-city", "Piazza Bellaro", 38.12, 13.36)
+        val ranked = ranker.rank(listOf(otherCity, acrossTown), noon, origin) { emptyList() }
+        assertEquals(listOf("across-town"), ranked.map { it.spot.id })
+    }
 }

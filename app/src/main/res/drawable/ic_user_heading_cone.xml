@@ -1,0 +1,25 @@
+<!-- Directional heading cone for the "you are here" marker. The wedge fans "up" (north in icon
+     space) from the marker centre and is rotated at runtime to the user's heading. A vertical
+     gradient fades it out away from the person so it reads as a beam of facing direction.
+     The viewport is tall: the cone tip sits at the marker centre (bottom area) and fans upward,
+     and the icon is anchored at its bottom so the tip pins to the user's location. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="120dp"
+    android:height="120dp"
+    android:viewportWidth="120"
+    android:viewportHeight="120">
+
+    <!-- Tip at the bottom-centre anchor (60,120) so rotation pivots on the user's location,
+         fanning up to a ~70° arc at the top. -->
+    <path android:pathData="M60,120 L18,22 Q60,4 102,22 Z">
+        <aapt:attr name="android:fillColor"
+            xmlns:aapt="http://schemas.android.com/aapt">
+            <gradient
+                android:type="linear"
+                android:startX="60" android:startY="120"
+                android:endX="60" android:endY="12"
+                android:startColor="#991A73E8"
+                android:endColor="#001A73E8" />
+        </aapt:attr>
+    </path>
+</vector>

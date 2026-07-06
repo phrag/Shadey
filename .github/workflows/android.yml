@@ -60,6 +60,11 @@ jobs:
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug --stacktrace
 
+      - name: Build release APK (minified)
+        # Built on every run, not just tags, so an R8/keep-rule breakage surfaces on the
+        # push that caused it instead of at the next release.
+        run: ./gradlew :app:assembleRelease --stacktrace
+
       - name: Upload debug APK artifact
         uses: actions/upload-artifact@v5
         with:
@@ -67,10 +72,22 @@ jobs:
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
-      - name: Name dev APK
-        # Give the published asset a friendly, stable filename instead of the raw app-debug.apk.
+      - name: Upload R8 mapping
+        # Needed to deobfuscate stack traces from minified builds.
+        uses: actions/upload-artifact@v5
+        with:
+          name: r8-mapping
+          path: app/build/outputs/mapping/release/mapping.txt
+          if-no-files-found: error
+
+      - name: Name dev APKs
+        # Friendly, stable asset filenames. The debug build stays the primary dev APK
+        # (readable logcat, no obfuscation); the minified build is published alongside it
+        # so the R8 configuration can be smoke-tested on-device before a release ships it.
         if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
-        run: cp app/build/outputs/apk/debug/app-debug.apk shadey-dev.apk
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk shadey-dev.apk
+          cp app/build/outputs/apk/release/app-release.apk shadey-dev-minified.apk
 
       - name: Remove stale dev asset
         # softprops/action-gh-release only overwrites assets matching the new filename, so the
@@ -97,13 +114,17 @@ jobs:
             Branch: `${{ github.ref_name }}`
             Commit: ${{ github.sha }}
           prerelease: true
-          files: shadey-dev.apk
+          files: |
+            shadey-dev.apk
+            shadey-dev-minified.apk
 
       - name: Rename APK for release
+        # Tagged releases ship the minified release build (same committed-keystore
+        # signature as debug, so it installs over any existing dev/debug install).
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          cp app/build/outputs/apk/debug/app-debug.apk shadey-${VERSION}.apk
+          cp app/build/outputs/apk/release/app-release.apk shadey-${VERSION}.apk
 
       - name: Extract release notes from CHANGELOG
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'

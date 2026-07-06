@@ -27,3 +27,8 @@ Every release follows these steps, in order:
   That release is always overwritten with the latest build — no need to dig
   through per-run workflow artifacts. After confirming CI is green for a
   change, point the user at that link to install the latest dev build.
+- The dev-build release carries two assets: `shadey-dev.apk` (debug — the
+  default for testing, readable logcat) and `shadey-dev-minified.apk` (the R8
+  release build, for smoke-testing the minification config before a release).
+  Tagged releases ship the minified build; its `mapping.txt` is uploaded as an
+  `r8-mapping` artifact on each run for deobfuscating crash traces.

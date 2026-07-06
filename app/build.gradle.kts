@@ -35,7 +35,14 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // Signed with the same committed keystore as debug builds. The keystore is
+            // public, which is fine for this app's distribution model (sideloaded from
+            // GitHub releases — the release page itself is the trust anchor), and a
+            // shared signature means release builds install straight over dev/debug
+            // builds without an uninstall.
+            signingConfig = signingConfigs.getByName("debug")
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

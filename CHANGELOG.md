@@ -3,6 +3,14 @@
 All notable changes to Shadey are documented here. Releases are published at
 https://github.com/phrag/shadey/releases.
 
+## Unreleased
+
+**Performance**
+- Release builds are now minified with R8 (code shrinking + resource shrinking),
+  making the APK significantly smaller and faster than the debug builds previous
+  releases shipped. Signed with the same keystore as before, so it installs over
+  any existing install without an uninstall.
+
 ## 1.2.0
 
 **Spots**

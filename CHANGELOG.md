@@ -5,6 +5,20 @@ https://github.com/phrag/shadey/releases.
 
 ## Unreleased
 
+**Routes**
+- Walking routes are now actually walking routes. The public OSRM demo server the
+  app used only serves car routing no matter which profile the URL asks for, so
+  "walking" routes followed arterial roads with driving durations (e.g. 3.9 km in
+  9 min) — and scored terribly for shade, since car routes hug wide open roads.
+  Routing now uses the FOSSGIS OSRM instance's real pedestrian profile
+  (routing.openstreetmap.de), giving footpath-aware routes and honest durations.
+- Fixed routes planned in a freshly-opened city showing a bogus "0% shade". The
+  shade score was computed once, at plan time — but in a new city the building
+  data arrives from the map tiles a few seconds after the camera does, so the
+  route was scored against an empty or partial building set and never corrected
+  itself. Routes are now re-scored (keeping your selected alternative) whenever
+  newly-harvested building data lands.
+
 **Performance**
 - Release builds are now minified with R8 (code shrinking + resource shrinking),
   making the APK significantly smaller and faster than the debug builds previous

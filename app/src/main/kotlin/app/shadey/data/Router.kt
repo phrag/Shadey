@@ -14,9 +14,15 @@ data class RouteOption(
     val durationSeconds: Double,
 )
 
-/** Walking directions via the public [OSRM](https://project-osrm.org/) demo server. */
+/**
+ * Walking directions via the FOSSGIS-hosted [OSRM](https://project-osrm.org/) instance
+ * (routing.openstreetmap.de), which runs a real pedestrian profile. The better-known
+ * router.project-osrm.org demo only serves the car profile no matter what profile the URL
+ * names — "walking" routes from it were actually driving routes (arterial roads, driving
+ * durations), which also wrecked the shade score.
+ */
 object Router {
-    private const val BASE_URL = "https://router.project-osrm.org/route/v1/walking"
+    private const val BASE_URL = "https://routing.openstreetmap.de/routed-foot/route/v1/foot"
     private const val USER_AGENT = "Shadey/1.0 (+https://github.com/phrag/shadey)"
 
     /** Up to three walking alternatives between [origin] and [dest], or empty on failure. */

@@ -427,22 +427,51 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update { it.copy(routeBusy = false, routeStatus = "No walking route found between those points") }
                 return@launch
             }
-            val now = instant()
-            val frozenBuildings = activeBuildings
-            val scored = withContext(Dispatchers.Default) {
-                // Reuse the shared spatial index instead of rescanning every building on each of the
-                // hundreds of per-sample lookups, and fix the sun position once — it's effectively
-                // constant across a few-km city walk at a single instant.
-                val index = indexFor(frozenBuildings)
-                val sun = SolarCalculator.position(origin, now)
-                raw.map { scoreRoute(it, sun, index) }
-            }
+            val scored = scoreOptions(raw, origin)
             // Shadiest first — that's the point of the feature.
             val best = scored.indices.maxByOrNull { scored[it].shadeRatio } ?: 0
             _state.update {
                 it.copy(
                     routeBusy = false, routeOptions = scored, selectedRouteIdx = best,
                     routeGeoJson = routeGeoJsonFor(scored[best]),
+                )
+            }
+        }
+    }
+
+    private suspend fun scoreOptions(options: List<RouteOption>, origin: LatLng): List<ScoredRoute> {
+        val now = instant()
+        val frozenBuildings = activeBuildings
+        return withContext(Dispatchers.Default) {
+            // Reuse the shared spatial index instead of rescanning every building on each of the
+            // hundreds of per-sample lookups, and fix the sun position once — it's effectively
+            // constant across a few-km city walk at a single instant.
+            val index = indexFor(frozenBuildings)
+            val sun = SolarCalculator.position(origin, now)
+            options.map { scoreRoute(it, sun, index) }
+        }
+    }
+
+    /**
+     * Re-scores the current route options against the latest building set, keeping the user's
+     * selected alternative. Planning a route just after arriving in a new city scores against an
+     * empty/partial set (the tile harvest lands seconds after the camera does), which read as a
+     * bogus "0% shade" that never corrected itself once the buildings arrived.
+     */
+    private fun rescoreRoutes() {
+        val s = _state.value
+        if (s.routeOptions.isEmpty()) return
+        val options = s.routeOptions.map { it.option }
+        val origin = s.routeOrigin ?: options.first().coords.first()
+        val idx = s.selectedRouteIdx
+        viewModelScope.launch {
+            val scored = scoreOptions(options, origin)
+            _state.update {
+                // The route may have been cancelled or replaced while we rescored — don't resurrect it.
+                if (it.routeOptions.map { r -> r.option } != options) it
+                else it.copy(
+                    routeOptions = scored,
+                    routeGeoJson = routeGeoJsonFor(scored[idx.coerceIn(scored.indices)]),
                 )
             }
         }
@@ -736,6 +765,7 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
             lastHarvestCenter = harvestCenter
             _state.update { it.copy(sourceLabel = "OpenStreetMap · ${activeBuildings.size} buildings") }
             recompute()
+            rescoreRoutes()
         }
     }
 

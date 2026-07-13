@@ -86,7 +86,7 @@ object GeoJsonWriter {
                     put("type", "LineString")
                     putJsonArray("coordinates") { coords.forEach { pt -> addJsonArray { add(pt.lng); add(pt.lat) } } }
                 }
-                putJsonObject("properties") { put("color", colorFor(sunlight)) }
+                putJsonObject("properties") { put("color", routeColorFor(sunlight)) }
             }
         }
     }
@@ -128,5 +128,17 @@ object GeoJsonWriter {
         Sunlight.SUN -> "#F5A623"
         Sunlight.SHADE -> "#5B6B7B"
         Sunlight.NIGHT -> "#3A3F4B"
+    }
+
+    /**
+     * Route lines use their own blue palette instead of [colorFor]: the sun-orange there
+     * disappears against the basemap's orange major roads, and the shade grey against the
+     * shadow overlay. Blues read as "route" (like every navigation app) while still coding
+     * the sun/shade split — dark blue for shaded stretches, light sky-blue for sunny ones.
+     */
+    fun routeColorFor(s: Sunlight): String = when (s) {
+        Sunlight.SUN -> "#4FC3F7"
+        Sunlight.SHADE -> "#1565C0"
+        Sunlight.NIGHT -> "#283593"
     }
 }

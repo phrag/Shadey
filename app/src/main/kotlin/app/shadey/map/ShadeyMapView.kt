@@ -313,14 +313,24 @@ private object MapStyles {
                 PropertyFactory.circleStrokeWidth(2f),
             ),
         )
-        // Shady-route line, coloured per same-sunlight run.
+        // Shady-route line, coloured per same-sunlight run, over a white casing so the
+        // blue reads clearly against any basemap colour (orange roads, shadow overlay).
+        style.addLayer(
+            LineLayer("route-casing", "route").withProperties(
+                PropertyFactory.lineColor("#FFFFFF"),
+                PropertyFactory.lineWidth(10f),
+                PropertyFactory.lineCap("round"),
+                PropertyFactory.lineJoin("round"),
+                PropertyFactory.lineOpacity(0.9f),
+            ),
+        )
         style.addLayer(
             LineLayer("route-layer", "route").withProperties(
                 PropertyFactory.lineColor(Expression.get("color")),
                 PropertyFactory.lineWidth(6f),
                 PropertyFactory.lineCap("round"),
                 PropertyFactory.lineJoin("round"),
-                PropertyFactory.lineOpacity(0.85f),
+                PropertyFactory.lineOpacity(1.0f),
             ),
         )
         // Dropped pin / route endpoints (drawn on top).

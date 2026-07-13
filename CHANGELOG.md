@@ -18,6 +18,10 @@ https://github.com/phrag/shadey/releases.
   route was scored against an empty or partial building set and never corrected
   itself. Routes are now re-scored (keeping your selected alternative) whenever
   newly-harvested building data lands.
+- The route line is now blue over a white casing so it stands out on the map —
+  the previous sun-orange blended into the basemap's orange roads, and the shade
+  grey into the shadow overlay. Sunny stretches draw in light sky-blue, shaded
+  ones in dark blue, keeping the sun/shade split visible at a glance.
 
 **Performance**
 - Release builds are now minified with R8 (code shrinking + resource shrinking),

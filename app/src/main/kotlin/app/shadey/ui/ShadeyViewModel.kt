@@ -1,6 +1,7 @@
 package app.shadey.ui
 
 import android.app.Application
+import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.shadey.core.data.SpotsJson
@@ -170,6 +171,8 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     // would otherwise re-parse features and recompute shade several times a second; we already
     // accumulate buildings across pans, so re-harvest only after moving a meaningful distance.
     private var lastHarvestCenter: LatLng? = null
+    // When the settle window opened for the current harvest location (see harvestGateOpen).
+    private var harvestSettleStartMs = 0L
     private var recomputeJob: Job? = null
     private var buildingsJob: Job? = null
     private var frameJob: Job? = null
@@ -713,11 +716,24 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
     fun shouldHarvestBuildings(c: LatLng): Boolean {
         if (bundledRegion?.contains(c) == true) return false
         if (downloadedCityRegion()?.contains(c) == true) return false
-        val lastHarvest = lastHarvestCenter
-        if (activeBuildings.isNotEmpty() && lastHarvest != null && distanceMeters(lastHarvest, c) < HARVEST_MIN_MOVE_M) {
-            return false
-        }
-        return true
+        return harvestGateOpen(c)
+    }
+
+    /**
+     * The movement/settle throttle on the tile-harvest path. The follow-camera re-renders the map
+     * on every GPS fix, and each render fires the building query; without a gate it re-parses
+     * features and recomputes shade several times a second (the frame-skip + heavy-GC storm seen
+     * in device logs). Buildings accumulate across pans, so once the local set is complete nothing
+     * new appears until we've actually moved — BUT for a short settle window after arriving
+     * somewhere new the gate stays open even without movement: the first harvest often runs while
+     * tiles are still streaming in and catches only a partial building set, which previously got
+     * locked in until a 25 m move (shade staying sparse right after opening a city).
+     */
+    private fun harvestGateOpen(c: LatLng): Boolean {
+        if (activeBuildings.isEmpty()) return true
+        val lastHarvest = lastHarvestCenter ?: return true
+        if (distanceMeters(lastHarvest, c) >= HARVEST_MIN_MOVE_M) return true
+        return SystemClock.elapsedRealtime() - harvestSettleStartMs < HARVEST_SETTLE_MS
     }
 
     /**
@@ -728,14 +744,11 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         // Bundled/downloaded-city data is more complete than tile queries — skip both regions.
         if (bundledRegion?.contains(center) == true) return
         if (downloadedCityRegion()?.contains(center) == true) return
-        // Throttle the tile-harvest path. The follow-camera re-renders the map on every GPS fix,
-        // and each render fires this query; without a gate it re-parses features and recomputes
-        // shade several times a second (the frame-skip + heavy-GC storm seen in device logs).
-        // Buildings accumulate across pans, so nothing new appears until we've actually moved.
-        if (!belowZoom && activeBuildings.isNotEmpty()) {
-            val lastHarvest = lastHarvestCenter
-            if (lastHarvest != null && distanceMeters(lastHarvest, center) < HARVEST_MIN_MOVE_M) return
-        }
+        if (!belowZoom && !harvestGateOpen(center)) return
+        // A harvest at a genuinely new location (re)starts the settle window; one that only ran
+        // because the window was still open must not extend it, or continuous rendering would
+        // keep the harvest loop alive forever.
+        val freshLocation = lastHarvestCenter?.let { distanceMeters(it, center) >= HARVEST_MIN_MOVE_M } ?: true
         val harvestCenter = center
         buildingsJob?.cancel()
         buildingsJob = viewModelScope.launch {
@@ -756,13 +769,18 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
             // Accumulate across pans so shadows for already-seen blocks stay available without
             // recomputation. The shadow cache (keyed by building id) is not cleared, so only the
             // genuinely new buildings get a shadow computed.
+            val sizeBefore = accumulated.size
             for (b in buildings) accumulated[b.id] = b
             while (accumulated.size > MAX_ACCUMULATED) {
                 val oldest = accumulated.keys.iterator().next()
                 accumulated.remove(oldest)
             }
-            activeBuildings = accumulated.values.toList()
             lastHarvestCenter = harvestCenter
+            if (freshLocation) harvestSettleStartMs = SystemClock.elapsedRealtime()
+            // A settle-window re-harvest that found nothing new changes nothing — skip the
+            // recompute (the expensive part) instead of redoing identical shade every second.
+            if (!freshLocation && accumulated.size == sizeBefore) return@launch
+            activeBuildings = accumulated.values.toList()
             _state.update { it.copy(sourceLabel = "OpenStreetMap · ${activeBuildings.size} buildings") }
             recompute()
             rescoreRoutes()
@@ -1208,6 +1226,9 @@ class ShadeyViewModel(app: Application) : AndroidViewModel(app) {
         const val FOLLOW_MIN_MOVE_M = 8.0
         // Minimum movement (metres) before the tile-building harvest re-runs (see onBuildingsQueried).
         const val HARVEST_MIN_MOVE_M = 25.0
+        // For this long after arriving somewhere new, the harvest may re-run without movement so
+        // the building set fills in as tiles finish streaming (see harvestGateOpen).
+        const val HARVEST_SETTLE_MS = 12_000L
         // Background update checks run at most once per day.
         const val UPDATE_CHECK_INTERVAL_MS = 24L * 60 * 60 * 1000
         // Route shade-scoring sample spacing — fine enough to catch individual buildings'

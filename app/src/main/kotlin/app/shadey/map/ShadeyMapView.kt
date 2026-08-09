@@ -7,6 +7,7 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import androidx.annotation.DrawableRes
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -51,6 +52,9 @@ private const val BUILDING_MIN_ZOOM = 14.0
 
 /** Milliseconds to wait before executing a building query after the last trigger fires. */
 private const val QUERY_DEBOUNCE_MS = 400L
+
+/** Ceiling on how long a burst of triggers may keep postponing the query (see scheduleQuery). */
+private const val QUERY_MAX_WAIT_MS = 1_200L
 
 // Live-marker glide (Organic-Maps-style position interpolation). Per-frame easing factor toward the
 // latest fix; a jump beyond the snap distance is placed instantly (not crawled); the glide ends once
@@ -171,9 +175,17 @@ fun ShadeyMap(
                         // Debounced building query — camera-idle and render-finish can both fire
                         // many times per pan (once per tile zoom level as tiles arrive). We post
                         // a delayed runnable and cancel any pending one, so only the last event
-                        // in a burst actually executes the query.
+                        // in a burst actually executes the query — BUT with a max-wait: while the
+                        // map renders continuously (tiles streaming in, follow-camera easing, the
+                        // marker gliding) the events arrive faster than the debounce interval, and
+                        // a pure trailing debounce would keep cancelling itself forever. That
+                        // starvation is what made shade take ages to appear on a slow connection
+                        // (and why backgrounding the app "fixed" it: the render loop paused long
+                        // enough for one quiet debounce interval to elapse).
                         val queryHandler = Handler(Looper.getMainLooper())
+                        var queryBurstStartMs = 0L
                         val queryRunnable = Runnable {
+                            queryBurstStartMs = 0L
                             if (map.cameraPosition.zoom < BUILDING_MIN_ZOOM) {
                                 onBuildingsQueried(emptyList(), true)
                                 return@Runnable
@@ -194,8 +206,11 @@ fun ShadeyMap(
                             }
                         }
                         fun scheduleQuery() {
+                            val now = SystemClock.uptimeMillis()
+                            if (queryBurstStartMs == 0L) queryBurstStartMs = now
                             queryHandler.removeCallbacks(queryRunnable)
-                            queryHandler.postDelayed(queryRunnable, QUERY_DEBOUNCE_MS)
+                            val delay = if (now - queryBurstStartMs >= QUERY_MAX_WAIT_MS) 0L else QUERY_DEBOUNCE_MS
+                            queryHandler.postDelayed(queryRunnable, delay)
                         }
                         map.addOnCameraIdleListener {
                             val center = map.cameraPosition.target

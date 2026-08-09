@@ -23,6 +23,19 @@ https://github.com/phrag/shadey/releases.
   grey into the shadow overlay. Sunny stretches draw in light sky-blue, shaded
   ones in dark blue, keeping the sun/shade split visible at a glance.
 
+**Fixes**
+- Fixed shade taking a very long time to appear outside downloaded cities — often
+  until the app was backgrounded and reopened. The building harvest waits for a
+  quiet moment after map activity, but while tiles stream in on a slow connection
+  (or the follow-camera keeps the map animating) the "quiet moment" never came,
+  so the harvest kept being postponed indefinitely; switching apps paused the
+  render loop just long enough for it to finally fire. The wait now has a hard
+  ceiling, so the harvest runs within about a second no matter how busy the map
+  is. In addition, the first harvest at a new location no longer freezes a
+  half-loaded building set: for a short settle window after arriving, the
+  harvest keeps re-running (only recomputing when new buildings actually show
+  up) so shade fills in as the tiles finish loading.
+
 **Performance**
 - Release builds are now minified with R8 (code shrinking + resource shrinking),
   making the APK significantly smaller and faster than the debug builds previous

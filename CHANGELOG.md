@@ -3,6 +3,8 @@
 All notable changes to Shadey are documented here. Releases are published at
 https://github.com/phrag/shadey/releases.
 
+## Unreleased
+
 ## 1.3.0
 
 **Routes**

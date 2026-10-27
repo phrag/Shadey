@@ -1,4 +1,11 @@
 # ☀️ Shadey
+
+[![CI](https://img.shields.io/github/actions/workflow/status/phrag/Shadey/android.yml?branch=main&label=CI)](https://github.com/phrag/Shadey/actions/workflows/android.yml)
+[![Latest release](https://img.shields.io/github/v/release/phrag/Shadey)](https://github.com/phrag/Shadey/releases/latest)
+[![Licence: GPL-3.0](https://img.shields.io/github/license/phrag/Shadey)](LICENSE)
+![Android 8.0+](https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android&logoColor=white)
+![No Google Play Services](https://img.shields.io/badge/Google%20Play%20Services-none-2ea44f)
+
 **Find the sun or shade.** Shadey shows whether a spot — a café terrace, a park bench, a
 canal bank — is in **sunlight or shade** right now (or at any time of day),
 computed from real **building shadows**. It's English, Berlin-first, and
